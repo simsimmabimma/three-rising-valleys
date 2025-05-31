@@ -2,89 +2,94 @@ import streamlit as st
 import requests
 import math
 import os
-from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
-
 API_KEY = os.getenv("POLYGON_API_KEY")
 
 BASE_URL = "https://api.polygon.io"
 
-st.title("📉 Monthly 0.618 Retracement Scanner (Log Scale)")
+@st.cache_data(ttl=24*3600)  # Cache for 24 hours
+def get_all_usa_tickers():
+    url = f"{BASE_URL}/v3/reference/tickers"
+    params = {
+        "market": "stocks",
+        "active": "true",
+        "limit": 1000,  # max per page
+        "apiKey": API_KEY,
+    }
+    tickers = []
+    cursor = None
+    while True:
+        if cursor:
+            params["cursor"] = cursor
+        response = requests.get(url, params=params)
+        data = response.json()
+        if "results" not in data:
+            break
+        tickers.extend([t["ticker"] for t in data["results"] if t["market"] == "stocks" and t["locale"] == "US"])
+        cursor = data.get("next_url", None)
+        if not cursor:
+            break
+    return list(set(tickers))
 
-def get_tickers(limit=200):
-    url = f"{BASE_URL}/v3/reference/tickers?market=stocks&exchange=XNYS&active=true&limit={limit}&apiKey={API_KEY}"
-    response = requests.get(url)
-    results = response.json().get("results", [])
-    return [t["ticker"] for t in results if "ticker" in t]
+@st.cache_data(ttl=12*3600)  # Cache monthly bars for 12 hours
+def get_monthly_bars(ticker):
+    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2000-01-01/2100-01-01"
+    params = {"adjusted": "true", "sort": "asc", "limit": 1000, "apiKey": API_KEY}
+    resp = requests.get(url, params=params)
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if "results" not in data:
+        return None
+    bars = data["results"]
+    return bars
 
-@st.cache_data(ttl=3600)
-def get_monthly_data(ticker, to="2025-04-30"):
-    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2015-01-01/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
-    resp = requests.get(url)
-    data = resp.json().get("results", [])
-    return data
-
-def log_fib_0618(low, high):
+def log_618_retracement(low, high):
     log_low = math.log(low)
     log_high = math.log(high)
-    log_diff = log_high - log_low
-    log_retracement = log_high - 0.618 * log_diff
-    return round(math.exp(log_retracement), 2)
+    retrace_log = log_high - 0.618 * (log_high - log_low)
+    return math.exp(retrace_log)
 
-def scan_ticker(ticker):
-    data = get_monthly_data(ticker)
-    if len(data) < 12:
+def check_pattern(ticker, bars):
+    if not bars or len(bars) < 18:
         return False
 
-    # Use last 12 months to find low-high
-    prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
-    recent = prices[-12:]
+    # Use last 18 months only
+    bars = bars[-18:]
 
-    # Find local low first, then local high after it
-    local_low = min(recent[:-4], key=lambda x: x["low"])  # Allow 3+ months buffer
-    low_index = recent.index(local_low)
-    local_high = max(recent[low_index + 1:], key=lambda x: x["high"])
-    high_index = recent.index(local_high)
+    lows = [b["l"] for b in bars]
+    highs = [b["h"] for b in bars]
 
-    if high_index <= low_index:
-        return False  # No valid move
+    swing_low = min(lows)
+    swing_high = max(highs)
+    retrace_price = log_618_retracement(swing_low, swing_high)
 
-    # Calculate 0.618 retracement
-    retrace_price = log_fib_0618(local_low["low"], local_high["high"])
+    # Check last 3 months lows <= retracement level
+    last_3_lows = lows[-3:]
+    return any(low <= retrace_price for low in last_3_lows)
 
-    # Get most recent month (April 2025)
-    latest = recent[-1]
-    if abs(latest["close"] - retrace_price) / retrace_price <= 0.35:
-        return {
-            "ticker": ticker,
-            "low": local_low["low"],
-            "high": local_high["high"],
-            "retraced_close": latest["close"],
-            "expected_0618": retrace_price,
-            "month": latest["date"].strftime("%b %Y")
-        }
+def main():
+    st.title("Monthly 3-Month 0.618 Retracement Scanner")
 
-    return False
+    with st.spinner("Fetching US tickers..."):
+        tickers = get_all_usa_tickers()
 
-# User controls
-max_tickers = st.slider("How many tickers to scan", 50, 500, 100, 50)
+    st.write(f"Total tickers fetched: {len(tickers)}")
 
-if st.button("Scan Now"):
-    st.write("🔍 Scanning... This may take a few minutes.")
-    tickers = get_tickers(limit=max_tickers)
-    results = []
+    matched = []
+    progress_bar = st.progress(0)
+    total = len(tickers)
 
-    progress = st.progress(0)
     for i, ticker in enumerate(tickers):
-        match = scan_ticker(ticker)
-        if match:
-            results.append(match)
-        progress.progress((i + 1) / len(tickers))
+        bars = get_monthly_bars(ticker)
+        if check_pattern(ticker, bars):
+            matched.append(ticker)
+        progress_bar.progress((i + 1) / total)
 
-    st.success(f"✅ Scan complete. Found {len(results)} matches.")
-    st.write("### 📈 Matching Tickers:")
-    for r in results:
-        st.write(f"**{r['ticker']}** | Month: {r['month']} | 0.618: ${r['expected_0618']} | Close: ${r['retraced_close']}")
+    st.success(f"Found {len(matched)} matching stocks.")
+    st.write(matched)
 
+if __name__ == "__main__":
+    main()
