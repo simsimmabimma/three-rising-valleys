@@ -56,15 +56,15 @@ def scan_ticker(ticker):
 
     # Get most recent month (April 2025)
     latest = recent[-1]
-    if abs(latest["close"] - retrace_price) / retrace_price <= 0.05:
-        return {
-            "ticker": ticker,
-            "low": local_low["low"],
-            "high": local_high["high"],
-            "retraced_close": latest["close"],
-            "expected_0618": retrace_price,
-            "month": latest["date"].strftime("%b %Y")
-        }
+   if latest["low"] <= retrace_price:
+    return {
+        "ticker": ticker,
+        "low": local_low["low"],
+        "high": local_high["high"],
+        "retraced_low": latest["low"],
+        "expected_0618": retrace_price,
+        "month": latest["date"].strftime("%b %Y")
+    }
 
     return False
 
