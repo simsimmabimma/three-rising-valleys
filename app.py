@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # Hardcoded tickers for testing
-TICKERS = ["TARA", "MRNA","SOFI"]
+TICKERS = ["TARA", "SOFI"]
 
 def find_swing_higher_lows(df, lookback_months=18, recent_low_months=3):
     if df.empty or len(df) < 10:
@@ -119,4 +119,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
