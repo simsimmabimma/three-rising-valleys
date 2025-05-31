@@ -2,104 +2,132 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import time
-import random
 
-# URL to your raw CSV with tickers
-TICKERS_CSV_URL = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
+# URL to your CSV ticker list on GitHub (first column tickers)
+TICKERS_URL = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
 
-@st.cache_data
+@st.cache_data(ttl=24*3600)
 def load_tickers():
-    df = pd.read_csv(TICKERS_CSV_URL)
-    # Assumes first column is tickers, drop NA and duplicates
-    tickers = df.iloc[:, 0].dropna().unique().tolist()
+    df = pd.read_csv(TICKERS_URL)
+    tickers = df.iloc[:,0].dropna().astype(str).tolist()
     return tickers
 
-def check_retracement(ticker):
-    """Check retracement pattern for one ticker.
-    Returns (ticker, True/False, reason or None)"""
-    try:
-        df = yf.download(ticker, period="2y", interval="1mo", progress=False)
-        if df.empty:
-            return ticker, False, "No data"
-        required_cols = ['Low', 'High']
-        if not all(col in df.columns for col in required_cols):
-            return ticker, False, "Missing required columns"
-        df = df.dropna(subset=required_cols)
-        if len(df) < 6:
-            return ticker, False, "Not enough monthly data"
-        # Your retracement logic here:
-        # Example simplified:
-        highs = df['High']
-        lows = df['Low']
-        max_high = highs.max()
-        min_low = lows.min()
-        retracement = (max_high - min_low) / max_high
-        # Just example: retracement > 0.15 means True
-        if retracement > 0.15:
-            return ticker, True, None
-        else:
-            return ticker, False, "No significant retracement"
-    except Exception as e:
-        return ticker, False, f"Error: {str(e)}"
+def check_two_swing_higher_lows(df):
+    """
+    Check if df (monthly data sorted oldest to newest) has at least
+    two swing higher lows with retracement >= 38% Fibonacci from previous low-high.
+    """
+    if len(df) < 6:
+        return False, "Not enough data"
 
-def scan_batch(tickers, batch_size, scanned):
-    batch = []
-    for t in tickers:
-        if t not in scanned:
-            batch.append(t)
-        if len(batch) == batch_size:
+    lows = df['Low'].values
+    highs = df['High'].values
+    n = len(df)
+
+    swings = []  # will hold (low, high) pairs of swings
+
+    i = 0
+    while i < n - 1:
+        # Find low point
+        low = lows[i]
+        # Find next high after this low
+        high_idx = None
+        for j in range(i + 1, n):
+            if highs[j] > highs[j-1]:
+                high_idx = j
+            else:
+                break
+        if high_idx is None:
             break
+        high = highs[high_idx]
+
+        # Save swing
+        swings.append((low, high))
+
+        # Find next retracement low after high
+        retrace_idx = None
+        for k in range(high_idx + 1, n):
+            if lows[k] < lows[k-1]:
+                retrace_idx = k
+                break
+        if retrace_idx is None:
+            break
+
+        retr_low = lows[retrace_idx]
+
+        # Calculate retracement level
+        prev_low, prev_high = low, high
+        retracement_ratio = (prev_high - retr_low) / (prev_high - prev_low)
+
+        if retracement_ratio < 0.38:
+            # Not a deep enough retracement; skip forward
+            i = retrace_idx + 1
+            continue
+
+        # Find next high after retracement low
+        next_high_idx = None
+        for m in range(retrace_idx + 1, n):
+            if highs[m] > highs[m-1]:
+                next_high_idx = m
+            else:
+                break
+        if next_high_idx is None:
+            break
+
+        next_high = highs[next_high_idx]
+        swings.append((retr_low, next_high))
+
+        # If at least two swings found (two pairs), return True
+        if len(swings) >= 4:
+            return True, f"Found {len(swings)//2} swing higher lows with retracement >= 38%"
+
+        i = next_high_idx + 1
+
+    return False, "Pattern not found"
+
+def scan_batch(tickers, batch_size=50):
     results = []
-    for ticker in batch:
-        res = check_retracement(ticker)
-        results.append(res)
-        scanned.add(ticker)
-        time.sleep(0.5)  # simple throttling delay, adjust as needed
+    for idx, ticker in enumerate(tickers):
+        if idx % batch_size == 0 and idx != 0:
+            st.write(f"Scanned {idx} tickers, pausing 10 seconds to avoid throttling...")
+            time.sleep(10)
+
+        st.write(f"Checking {ticker}...")
+        try:
+            data = yf.Ticker(ticker).history(period="5y", interval="1mo")
+            if data.empty:
+                st.write(f"No monthly data for {ticker}")
+                continue
+
+            # Sort by date ascending (oldest to newest)
+            df = data.sort_index()
+
+            found, msg = check_two_swing_higher_lows(df)
+            if found:
+                results.append((ticker, msg))
+                st.write(f"**{ticker}** matches pattern: {msg}")
+            else:
+                st.write(f"{ticker}: {msg}")
+
+        except Exception as e:
+            st.write(f"Error checking {ticker}: {e}")
+
     return results
 
 def main():
-    st.title("3 Rising Valleys Scanner")
+    st.title("Swing Higher Lows Pattern Scanner (Monthly Chart)")
 
     tickers = load_tickers()
+    st.write(f"Loaded {len(tickers)} tickers.")
 
-    # Initialize scanned tickers set in session state
-    if "scanned" not in st.session_state:
-        st.session_state.scanned = set()
+    batch_size = st.slider("Batch size (tickers per batch)", 10, 100, 50)
 
-    st.sidebar.header("Settings")
-    batch_size = st.sidebar.slider("Batch size", min_value=10, max_value=200, value=100, step=10)
-
-    if st.sidebar.button("Reset Scan"):
-        st.session_state.scanned.clear()
-        st.success("Scan reset! Ready to start fresh.")
-
-    if st.sidebar.button("Start Scan") or st.session_state.get("auto_scan", False):
-        st.session_state.auto_scan = True
-        remaining = [t for t in tickers if t not in st.session_state.scanned]
-        if not remaining:
-            st.success("All tickers scanned!")
-            st.session_state.auto_scan = False
-        else:
-            with st.spinner(f"Scanning batch of up to {batch_size} tickers..."):
-                results = scan_batch(remaining, batch_size, st.session_state.scanned)
-            # Show results incrementally
-            for ticker, passed, reason in results:
-                if passed:
-                    st.success(f"{ticker}: Pattern detected!")
-                else:
-                    st.info(f"{ticker}: {reason}")
-
-            # Auto-run next batch if there are more
-            if len(st.session_state.scanned) < len(tickers):
-                st.experimental_rerun()
-            else:
-                st.success("Scanning complete for all tickers.")
-                st.session_state.auto_scan = False
-
-    else:
-        st.write(f"Ready to scan {len(tickers)} tickers.")
-        scanned_count = len(st.session_state.scanned)
-        st.write(f"Tickers scanned so far: {scanned_count}")
+    if st.button("Run Scan"):
+        results = scan_batch(tickers, batch_size)
+        st.write("Scan complete.")
+        st.write(f"Found {len(results)} tickers matching pattern:")
+        for t, m in results:
+            st.write(f"- {t}: {m}")
 
 if __name__ == "__main__":
     main()
