@@ -27,11 +27,18 @@ def check_retracement(ticker):
     except Exception:
         return None
 
+    # Check if df is empty or does not have required columns
+    if df.empty or 'Low' not in df.columns or 'High' not in df.columns:
+        return None
+
     if df.shape[0] < 36:  # at least 3 years monthly data
         return None
 
     df = df.dropna(subset=['Low', 'High'])
     df = df.reset_index()
+
+    # rest of your code ...
+
 
     recent = df.tail(12)
 
