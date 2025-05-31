@@ -85,7 +85,7 @@ def check_two_swing_higher_lows(df):
 
     return False, "Pattern not found"
 
-def scan_batch(tickers, batch_size=50):
+def scan_batch(tickers, batch_size=250):
     results = []
     for idx, ticker in enumerate(tickers):
         if idx % batch_size == 0 and idx != 0:
