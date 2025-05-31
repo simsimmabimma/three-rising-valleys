@@ -77,43 +77,60 @@ def main():
     tickers = TICKERS
     st.write(f"Testing with {len(tickers)} hardcoded tickers: {', '.join(tickers)}")
 
+    # Initialize session state
     if 'index' not in st.session_state:
         st.session_state.index = 0
     if 'found_tickers' not in st.session_state:
         st.session_state.found_tickers = []
 
     if st.session_state.index >= len(tickers):
-        st.write("All tickers scanned.")
+        st.success("✅ All tickers scanned.")
         if st.session_state.found_tickers:
-            st.write("Tickers matching pattern:")
+            st.subheader("Tickers matching pattern:")
             for t, msg in st.session_state.found_tickers:
                 st.write(f"- {t}: {msg}")
+        else:
+            st.info("No tickers matched the pattern.")
         return
 
     current_ticker = tickers[st.session_state.index]
-    st.write(f"Scanning ticker {st.session_state.index + 1}/{len(tickers)}: **{current_ticker}**")
+    st.header(f"Scanning {current_ticker} ({st.session_state.index + 1} of {len(tickers)})")
 
-    if st.button("Scan This Ticker"):
+    # Buttons
+    scan_ticker_clicked = st.button("🔍 Scan This Ticker")
+    next_ticker_clicked = st.button("➡️ Next Ticker")
+
+    if scan_ticker_clicked:
         try:
             data = yf.Ticker(current_ticker).history(period="5y", interval="1mo")
+
             if data.empty:
-                st.warning("No monthly data found.")
+                st.warning("No data returned from Yahoo Finance.")
+                return
+
+            if not {'High', 'Low'}.issubset(data.columns):
+                st.warning("Data missing 'High' or 'Low' columns.")
+                return
+
+            if not isinstance(data.index, pd.DatetimeIndex):
+                data.index = pd.to_datetime(data.index)
+
+            found, msg = find_swing_higher_lows(data)
+            if found:
+                st.success(f"✅ {current_ticker} matches pattern! {msg}")
+                st.session_state.found_tickers.append((current_ticker, msg))
             else:
-                found, msg = find_swing_higher_lows(data)
-                if found:
-                    st.success(f"{current_ticker} matches pattern! {msg}")
-                    st.session_state.found_tickers.append((current_ticker, msg))
-                else:
-                    st.info(f"{current_ticker} does NOT match pattern. {msg}")
+                st.info(f"{current_ticker} does NOT match pattern. {msg}")
+
         except Exception as e:
             st.error(f"Error scanning {current_ticker}: {e}")
 
-    if st.button("Next Ticker"):
+    if next_ticker_clicked:
         st.session_state.index += 1
-        st.experimental_rerun()
+        st.rerun()  # Safe rerun after state change
 
     if st.session_state.found_tickers:
-        st.write("Tickers found so far:")
+        st.write("✅ Tickers found so far:")
         for t, msg in st.session_state.found_tickers:
             st.write(f"- {t}: {msg}")
 
