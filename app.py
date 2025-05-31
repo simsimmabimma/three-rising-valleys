@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("A_xj1Mwz42bTgVFi6Hz0gOEm4Olk9aDH")
+API_KEY = os.getenv("uK8VVf63Y1jBNNOmUKOnpp8BEUI8e4Gw")
 
 BASE_URL = "https://api.polygon.io"
 
