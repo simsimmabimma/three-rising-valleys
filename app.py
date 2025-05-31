@@ -1,9 +1,10 @@
 import streamlit as st
 import yfinance as yf
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
+import pandas as pd
 
-st.title("Monthly 0.618 Retracement Scanner (Log Scale) - SOFI Test")
+st.title("Monthly 0.618 Retracement Scanner (Log Scale) - Multi Ticker")
 
 def log_fib_0618(low, high):
     log_low = math.log(low)
@@ -12,55 +13,101 @@ def log_fib_0618(low, high):
     log_retracement = log_high - 0.618 * log_diff
     return round(math.exp(log_retracement), 2)
 
-def check_retracement_sofi():
-    ticker = "SOFI"
+def passes_filters(tk):
+    info = tk.info
+    try:
+        # Check listing age ≥ 3 years
+        ipo_date = info.get('ipoDate')
+        if ipo_date is None:
+            return False
+        ipo_dt = datetime.strptime(ipo_date, "%Y-%m-%d")
+        if (datetime.now() - ipo_dt).days < 365 * 3:
+            return False
+
+        # Market Cap ≥ 1B
+        market_cap = info.get('marketCap', 0)
+        if market_cap < 1_000_000_000:
+            return False
+
+        # Average volume ≥ 1M (3 months)
+        hist = tk.history(period="3mo", interval="1d")
+        if hist.empty:
+            return False
+        avg_volume = hist['Volume'].mean()
+        if avg_volume < 1_000_000:
+            return False
+
+        return True
+    except Exception:
+        return False
+
+def check_retracement(ticker):
     tk = yf.Ticker(ticker)
     data = tk.history(period="2y", interval="1mo")
 
     if data.empty or len(data) < 6:
-        st.write(f"Not enough monthly data for {ticker}")
-        return False
-    
+        return None
+
     lows = data['Low'].tolist()
     highs = data['High'].tolist()
     dates = data.index.tolist()
 
-    st.write(f"Monthly lows for {ticker}:")
-    for d, low in zip(dates, lows):
-        st.write(f"{d.strftime('%Y-%m')}: {low}")
-
     swing_low = min(lows)
     swing_low_idx = lows.index(swing_low)
-    st.write(f"Swing low: {swing_low} at {dates[swing_low_idx].strftime('%Y-%m')}")
 
-    highs_after_low = highs[swing_low_idx + 1 :]
+    highs_after_low = highs[swing_low_idx + 1:]
     if not highs_after_low:
-        st.write("No data after swing low to find swing high")
-        return False
-
+        return None
     swing_high = max(highs_after_low)
     swing_high_idx = highs_after_low.index(swing_high) + swing_low_idx + 1
-    st.write(f"Swing high: {swing_high} at {dates[swing_high_idx].strftime('%Y-%m')}")
 
     retrace_price = log_fib_0618(swing_low, swing_high)
-    st.write(f"0.618 Fib Retracement price (log scale): {retrace_price}")
 
     last_3_lows = lows[-3:]
     last_3_dates = dates[-3:]
-    st.write("Checking last 3 months lows vs retracement price:")
+
     for d, low in zip(last_3_dates, last_3_lows):
-        st.write(f"{d.strftime('%Y-%m')}: low={low}")
         if low <= retrace_price:
-            st.success(f"Retracement dip detected in {d.strftime('%Y-%m')} with low {low} ≤ {retrace_price}")
-            return True
+            return {
+                "Ticker": ticker,
+                "Swing Low": swing_low,
+                "Swing Low Date": dates[swing_low_idx].strftime("%Y-%m"),
+                "Swing High": swing_high,
+                "Swing High Date": dates[swing_high_idx].strftime("%Y-%m"),
+                "Fib 0.618 Retracement": retrace_price,
+                "Retracement Dip Date": d.strftime("%Y-%m"),
+                "Retracement Low": low,
+            }
+    return None
 
-    st.info("No retracement dip detected in last 3 months.")
-    return False
+# Main scanning button
+if st.button("Scan S&P 500 tickers"):
 
-if st.button("Check SOFI"):
-    result = check_retracement_sofi()
-    if result:
-        st.write("Pattern found for SOFI.")
+    st.info("Fetching tickers and filtering by listing age, volume, and market cap...")
+    sp500_tickers = yf.Tickers(' '.join(yf.Tickers().tickers_sp500))
+
+    filtered_tickers = []
+    for ticker in yf.Tickers().tickers_sp500:
+        tk = yf.Ticker(ticker)
+        if passes_filters(tk):
+            filtered_tickers.append(ticker)
+
+    st.write(f"Tickers after filtering: {len(filtered_tickers)}")
+
+    results = []
+    progress_bar = st.progress(0)
+    total = len(filtered_tickers)
+
+    for i, ticker in enumerate(filtered_tickers):
+        res = check_retracement(ticker)
+        if res:
+            results.append(res)
+        progress_bar.progress((i + 1) / total)
+
+    if results:
+        df = pd.DataFrame(results)
+        st.success(f"Found {len(results)} tickers with retracement dip.")
+        st.dataframe(df)
     else:
-        st.write("No pattern found for SOFI.")
+        st.warning("No tickers found with retracement dip.")
 
