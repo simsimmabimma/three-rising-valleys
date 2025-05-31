@@ -6,13 +6,15 @@ from datetime import datetime
 # Hardcoded tickers for testing
 TICKERS = ["TARA", "SOFI"]
 
-def has_higher_low_last_12_months(df):
-    if df.empty or len(df) < 15:
-        return False, "Not enough monthly data (need at least 15 months)"
+def has_higher_low_last_24_months(df):
+    if df.empty or len(df) < 26:
+        return False, "Not enough monthly data (need at least 26 months)"
 
     df = df.sort_index()
-    df = df[df.index >= df.index[-1] - pd.DateOffset(months=14)]  # look back 15 months
+    df = df[df.index >= df.index[-1] - pd.DateOffset(months=25)]
+
     lows = df['Low'].values
+    closes = df['Close'].values
     dates = df.index.to_list()
     n = len(df)
 
@@ -29,18 +31,21 @@ def has_higher_low_last_12_months(df):
         prev_date, prev_low = local_lows[i - 1]
         curr_date, curr_low = local_lows[i]
 
-        if curr_low > prev_low and curr_date >= df.index[-1] - pd.DateOffset(months=12):
-            return True, f"Higher low on {curr_date.date()} (Previous: {prev_date.date()})"
+        if curr_low > prev_low and curr_date >= df.index[-1] - pd.DateOffset(months=24):
+            latest_close = closes[-1]
+            if latest_close > curr_low:
+                return True, f"Higher low on {curr_date.date()} (prev: {prev_date.date()}), latest close {latest_close:.2f} > low {curr_low:.2f}"
+            else:
+                return False, f"Higher low on {curr_date.date()}, but latest close ({latest_close:.2f}) is not higher than low ({curr_low:.2f})"
 
-    return False, "No higher low in the last 12 months"
+    return False, "No higher low in the last 24 months"
 
 def main():
-    st.title("Higher Low Detector (Monthly Chart - Last 12 Months)")
+    st.title("Higher Low + Price Above Low (Monthly Chart - Last 24 Months)")
 
     tickers = TICKERS
     st.write(f"Testing with {len(tickers)} hardcoded tickers: {', '.join(tickers)}")
 
-    # Initialize session state
     if 'index' not in st.session_state:
         st.session_state.index = 0
     if 'found_tickers' not in st.session_state:
@@ -49,17 +54,16 @@ def main():
     if st.session_state.index >= len(tickers):
         st.success("✅ All tickers scanned.")
         if st.session_state.found_tickers:
-            st.subheader("Tickers with higher lows:")
+            st.subheader("Tickers matching pattern:")
             for t, msg in st.session_state.found_tickers:
                 st.write(f"- {t}: {msg}")
         else:
-            st.info("No tickers showed a higher low pattern.")
+            st.info("No tickers matched the pattern.")
         return
 
     current_ticker = tickers[st.session_state.index]
     st.header(f"Scanning {current_ticker} ({st.session_state.index + 1} of {len(tickers)})")
 
-    # Buttons
     scan_ticker_clicked = st.button("🔍 Scan This Ticker")
     next_ticker_clicked = st.button("➡️ Next Ticker")
 
@@ -71,14 +75,14 @@ def main():
                 st.warning("No data returned from Yahoo Finance.")
                 return
 
-            if not {'High', 'Low'}.issubset(data.columns):
-                st.warning("Data missing 'High' or 'Low' columns.")
+            if not {'High', 'Low', 'Close'}.issubset(data.columns):
+                st.warning("Data missing required columns.")
                 return
 
             if not isinstance(data.index, pd.DatetimeIndex):
                 data.index = pd.to_datetime(data.index)
 
-            found, msg = has_higher_low_last_12_months(data)
+            found, msg = has_higher_low_last_24_months(data)
             if found:
                 st.success(f"✅ {current_ticker} matches pattern! {msg}")
                 st.session_state.found_tickers.append((current_ticker, msg))
