@@ -1,135 +1,113 @@
 import streamlit as st
-import pandas as pd
 import yfinance as yf
+import pandas as pd
+import numpy as np
 import math
-import random
+from datetime import datetime
 
-st.set_page_config(page_title="Monthly 0.618 Retracement Scanner (Log Scale)")
+st.title("📉 Monthly 0.618 Retracement Scanner (NASDAQ)")
 
 NASDAQ_URL = "https://raw.githubusercontent.com/datasets/nasdaq-listings/master/data/nasdaq-listed-symbols.csv"
 
-@st.cache_data(ttl=24*3600)
-def load_all_nasdaq_tickers():
+@st.cache_data(ttl=86400)
+def load_nasdaq_tickers():
     df = pd.read_csv(NASDAQ_URL)
-    tickers = df['Symbol'].str.upper().tolist()
+    # The CSV has a column 'Symbol'
+    tickers = df['Symbol'].tolist()
     return tickers
 
 def log_fib_0618(low, high):
+    # Log scale fib retracement
     log_low = math.log(low)
     log_high = math.log(high)
     log_diff = log_high - log_low
-    log_retracement = log_high - 0.618 * log_diff
-    return math.exp(log_retracement)
+    retracement_log = log_high - 0.618 * log_diff
+    return round(math.exp(retracement_log), 2)
 
 def check_retracement(ticker):
     try:
+        # Download 4 years of monthly data, adjusted prices
         df = yf.download(ticker, period="4y", interval="1mo", progress=False, auto_adjust=True)
     except Exception:
         return None
 
-    # Check if df is empty or does not have required columns
-    if df.empty or 'Low' not in df.columns or 'High' not in df.columns:
+    required_cols = ['Low', 'High', 'Close']
+    if df.empty or not all(col in df.columns for col in required_cols):
         return None
 
-    if df.shape[0] < 36:  # at least 3 years monthly data
+    df = df.dropna(subset=required_cols)
+
+    if len(df) < 36:  # require at least 3 years monthly data
         return None
 
-    df = df.dropna(subset=['Low', 'High'])
     df = df.reset_index()
 
-    # rest of your code ...
+    # Take last 36 months (~3 years)
+    recent = df.tail(36)
 
+    # Find swing low (lowest low in recent 3 years)
+    swing_low_row = recent.loc[recent['Low'].idxmin()]
+    swing_low = swing_low_row['Low']
+    swing_low_date = swing_low_row['Date']
 
-    recent = df.tail(12)
-
-    # Find local low in recent 12 months
-    local_low_idx = recent['Low'].idxmin()
-    local_low = recent.loc[local_low_idx]
-
-    # Find local high after low
-    after_low = recent[recent.index > local_low_idx]
+    # Find swing high AFTER the swing low date
+    after_low = recent[recent['Date'] > swing_low_date]
     if after_low.empty:
         return None
-    local_high_idx = after_low['High'].idxmax()
-    local_high = after_low.loc[local_high_idx]
+    swing_high_row = after_low.loc[after_low['High'].idxmax()]
+    swing_high = swing_high_row['High']
+    swing_high_date = swing_high_row['Date']
 
-    if local_high_idx <= local_low_idx:
-        return None  # invalid pattern
-
-    retrace_price = log_fib_0618(local_low['Low'], local_high['High'])
-
-    # Check if price dipped to or below retrace_price in last 3 months after high
-    after_high = recent[recent.index > local_high_idx]
-    if after_high.empty:
+    # If swing high before swing low, no valid pattern
+    if swing_high_date <= swing_low_date:
         return None
 
-    dip_found = False
-    dip_date = None
-    dip_price = None
-    for _, row in after_high.iterrows():
-        if row['Low'] <= retrace_price:
-            dip_found = True
-            dip_date = row['Date']
-            dip_price = row['Low']
-            break
+    # Calculate 0.618 fib retracement level in log scale
+    retracement_price = log_fib_0618(swing_low, swing_high)
 
-    if dip_found:
+    # Check if stock price dipped to or below retracement in last 3 months
+    last_3_months = recent.tail(3)
+    dipped_below = (last_3_months['Low'] <= retracement_price).any()
+
+    if dipped_below:
         return {
-            "Ticker": ticker,
-            "Local Low": round(local_low['Low'], 2),
-            "Local Low Date": local_low['Date'].strftime('%Y-%m'),
-            "Local High": round(local_high['High'], 2),
-            "Local High Date": local_high['Date'].strftime('%Y-%m'),
-            "Retracement Price (0.618)": round(retrace_price, 2),
-            "Dip Date": dip_date.strftime('%Y-%m'),
-            "Dip Price": round(dip_price, 2),
+            "ticker": ticker,
+            "swing_low": round(swing_low, 2),
+            "swing_low_date": swing_low_date.strftime("%b %Y"),
+            "swing_high": round(swing_high, 2),
+            "swing_high_date": swing_high_date.strftime("%b %Y"),
+            "retracement_0618": retracement_price,
+            "last_low": round(last_3_months['Low'].min(), 2),
+            "last_low_date": last_3_months.loc[last_3_months['Low'].idxmin(), 'Date'].strftime("%b %Y")
         }
-
     return None
 
-st.title("📉 Monthly 0.618 Retracement Scanner (Log Scale) - Nasdaq Tickers")
+def scan_batch(tickers, batch_size=50):
+    results = []
+    total = len(tickers)
+    for i in range(0, total, batch_size):
+        batch = tickers[i:i+batch_size]
+        st.write(f"Scanning tickers {i+1} to {i+len(batch)} of {total}...")
+        for ticker in batch:
+            res = check_retracement(ticker)
+            if res:
+                results.append(res)
+    return results
 
-tickers = load_all_nasdaq_tickers()
-st.write(f"Loaded {len(tickers)} Nasdaq tickers.")
+def main():
+    st.write("Loading NASDAQ tickers...")
+    tickers = load_nasdaq_tickers()
+    st.write(f"Total tickers loaded: {len(tickers)}")
 
-if 'scanned_tickers' not in st.session_state:
-    st.session_state.scanned_tickers = set()
+    if st.button("Start Scan"):
+        with st.spinner("Scanning tickers for retracement dip... This will take some time."):
+            results = scan_batch(tickers, batch_size=50)
+        if results:
+            st.success(f"Found {len(results)} tickers with retracement dip:")
+            df_results = pd.DataFrame(results)
+            st.dataframe(df_results)
+        else:
+            st.info("No tickers found with the retracement dip criteria.")
 
-if 'results' not in st.session_state:
-    st.session_state.results = []
-
-batch_size = st.number_input("Number of tickers to scan per batch", min_value=10, max_value=100, value=50)
-
-def scan_batch():
-    remaining = list(set(tickers) - st.session_state.scanned_tickers)
-    if not remaining:
-        st.warning("All tickers scanned.")
-        return
-
-    batch = random.sample(remaining, min(batch_size, len(remaining)))
-    new_results = []
-    progress_bar = st.progress(0)
-    for i, ticker in enumerate(batch):
-        st.write(f"Scanning {ticker}...")
-        result = check_retracement(ticker)
-        if result:
-            new_results.append(result)
-        st.session_state.scanned_tickers.add(ticker)
-        progress_bar.progress((i+1)/len(batch))
-    st.session_state.results.extend(new_results)
-    progress_bar.empty()
-
-if st.button("Scan Next Batch"):
-    scan_batch()
-
-if st.session_state.results:
-    df_results = pd.DataFrame(st.session_state.results)
-    st.write(f"Found {len(df_results)} tickers matching retracement criteria:")
-    st.dataframe(df_results)
-else:
-    st.write("No matching tickers found yet.")
-
-if st.button("Reset Scan"):
-    st.session_state.scanned_tickers = set()
-    st.session_state.results = []
-    st.experimental_rerun()
+if __name__ == "__main__":
+    main()
