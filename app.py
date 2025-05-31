@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # Hardcoded tickers for testing
-TICKERS = ["TARA", "SOFI"]
+TICKERS = ["TARA", "SOFI", "MRNA"]
 
 def has_higher_low_last_24_months(df):
     if df.empty or len(df) < 26:
