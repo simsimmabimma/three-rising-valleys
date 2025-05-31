@@ -4,11 +4,11 @@ import pandas as pd
 import numpy as np
 import time
 
-API_KEY = "A_xj1Mwz42bTgVFi6Hz0gOEm4Olk9aDH"
+API_KEY = "YOUR_POLYGON_API_KEY"
 BASE_URL = "https://api.polygon.io"
 
-st.set_page_config(page_title="Fib Retracement Scanner (Polygon.io)", layout="wide")
-st.title("📊 Monthly Fib Retracement Scanner using Polygon.io")
+st.set_page_config(page_title="Fib .618 Retracement (Last 3 Months)", layout="wide")
+st.title("🔍 Monthly .618 Fibonacci Retracement Scanner")
 
 @st.cache_data(ttl=24*3600)
 def get_nasdaq_tickers():
@@ -27,14 +27,13 @@ def get_nasdaq_tickers():
         if not data.get("next_url"):
             break
         page += 1
-        time.sleep(0.2)  # be kind to API
+        time.sleep(0.2)
         if len(tickers) >= 1000:
             break
-    return tickers[:1000]  # limit for demo
+    return tickers[:1000]
 
 def get_monthly_agg(ticker):
-    # Get last 5 years monthly aggregates
-    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2018-01-01/2023-12-31?adjusted=true&sort=asc&limit=120&apiKey={API_KEY}"
+    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2022-01-01/2025-12-31?adjusted=true&sort=desc&limit=60&apiKey={API_KEY}"
     resp = requests.get(url)
     if resp.status_code != 200:
         return None
@@ -46,39 +45,37 @@ def get_monthly_agg(ticker):
     df['t'] = pd.to_datetime(df['t'], unit='ms')
     df.set_index('t', inplace=True)
     df.rename(columns={'l':'Low','h':'High','o':'Open','c':'Close','v':'Volume'}, inplace=True)
-    return df
+    return df.sort_index()
 
-def fib_retracement_scan_polygon(df):
-    if df is None or len(df) < 24:
+def check_618_retracement_last_3m(df):
+    if df is None or len(df) < 3:
         return False
-    df['log_close'] = np.log(df['Close'])
 
-    last_12m = df.iloc[-12:]
-    low_idx = last_12m['Close'].idxmin()
-    low_log_price = df.loc[low_idx, 'log_close']
+    recent = df.iloc[-3:]
+    low_idx = recent['Close'].idxmin()
+    high_idx = recent['Close'].idxmax()
 
-    after_low = df.loc[low_idx:]
-    peak_log_price = after_low['log_close'].max()
+    if low_idx == high_idx:
+        return False  # not a clear range
 
-    fib_618_log = low_log_price + 0.618 * (peak_log_price - low_log_price)
+    low_log = np.log(df.loc[low_idx, 'Close'])
+    high_log = np.log(df.loc[high_idx, 'Close'])
+
+    fib_618_log = low_log + 0.618 * (high_log - low_log)
     fib_618_price = np.exp(fib_618_log)
 
-    last_3m = df.iloc[-3:]
     tolerance = 0.03  # 3%
-
-    retraced = any(
+    return any(
         abs(price - fib_618_price) / fib_618_price <= tolerance
-        for price in last_3m['Close']
+        for price in recent['Close']
     )
-
-    return retraced
 
 if "tickers" not in st.session_state:
     with st.spinner("Fetching tickers list from Polygon.io..."):
         st.session_state.tickers = get_nasdaq_tickers()
 
-max_tickers = 100  # limit for demo
-st.write(f"Scanning first **{max_tickers}** NASDAQ tickers from Polygon.io...")
+max_tickers = 100
+st.write(f"Scanning first **{max_tickers}** NASDAQ stocks...")
 
 if st.button("Run Scan"):
     results = []
@@ -88,15 +85,16 @@ if st.button("Run Scan"):
     for i, ticker in enumerate(st.session_state.tickers[:max_tickers]):
         status_text.text(f"Scanning {ticker} ({i+1}/{max_tickers})")
         df = get_monthly_agg(ticker)
-        if fib_retracement_scan_polygon(df):
+        if check_618_retracement_last_3m(df):
             results.append(ticker)
         progress_bar.progress((i + 1) / max_tickers)
-        time.sleep(0.1)  # avoid API rate limits
+        time.sleep(0.2)
 
-    status_text.text(f"Scan complete! Found {len(results)} matches.")
+    status_text.text(f"Done! Found {len(results)} matches.")
     if results:
-        st.write("Tickers matching fib retracement scan:")
+        st.success("✅ Matching tickers:")
         st.write(results)
     else:
-        st.write("No tickers matched the criteria.")
+        st.warning("❌ No tickers matched the 0.618 retracement in the last 3 months.")
+
 
