@@ -1,100 +1,90 @@
 import streamlit as st
 import requests
-import pandas as pd
-import numpy as np
-import time
+import math
+import os
+from datetime import datetime
+from dotenv import load_dotenv
 
-API_KEY = "YOUR_POLYGON_API_KEY"
+load_dotenv()
+
+API_KEY = os.getenv("POLYGON_API_KEY")
+
 BASE_URL = "https://api.polygon.io"
 
-st.set_page_config(page_title="Fib .618 Retracement (Last 3 Months)", layout="wide")
-st.title("🔍 Monthly .618 Fibonacci Retracement Scanner")
+st.title("📉 Monthly 0.618 Retracement Scanner (Log Scale)")
 
-@st.cache_data(ttl=24*3600)
-def get_nasdaq_tickers():
-    url = f"{BASE_URL}/v3/reference/tickers?market=stocks&exchange=XNAS&active=true&limit=1000&apiKey={API_KEY}"
-    tickers = []
-    page = 1
-    while True:
-        resp = requests.get(url + f"&page={page}")
-        if resp.status_code != 200:
-            break
-        data = resp.json()
-        results = data.get("results", [])
-        if not results:
-            break
-        tickers += [r["ticker"] for r in results]
-        if not data.get("next_url"):
-            break
-        page += 1
-        time.sleep(0.2)
-        if len(tickers) >= 1000:
-            break
-    return tickers[:1000]
+def get_tickers(limit=200):
+    url = f"{BASE_URL}/v3/reference/tickers?market=stocks&exchange=XNYS&active=true&limit={limit}&apiKey={API_KEY}"
+    response = requests.get(url)
+    results = response.json().get("results", [])
+    return [t["ticker"] for t in results if "ticker" in t]
 
-def get_monthly_agg(ticker):
-    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2022-01-01/2025-12-31?adjusted=true&sort=desc&limit=60&apiKey={API_KEY}"
+@st.cache_data(ttl=3600)
+def get_monthly_data(ticker, to="2025-04-30"):
+    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2015-01-01/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
     resp = requests.get(url)
-    if resp.status_code != 200:
-        return None
-    data = resp.json()
-    results = data.get("results", [])
-    if not results:
-        return None
-    df = pd.DataFrame(results)
-    df['t'] = pd.to_datetime(df['t'], unit='ms')
-    df.set_index('t', inplace=True)
-    df.rename(columns={'l':'Low','h':'High','o':'Open','c':'Close','v':'Volume'}, inplace=True)
-    return df.sort_index()
+    data = resp.json().get("results", [])
+    return data
 
-def check_618_retracement_last_3m(df):
-    if df is None or len(df) < 3:
+def log_fib_0618(low, high):
+    log_low = math.log(low)
+    log_high = math.log(high)
+    log_diff = log_high - log_low
+    log_retracement = log_high - 0.618 * log_diff
+    return round(math.exp(log_retracement), 2)
+
+def scan_ticker(ticker):
+    data = get_monthly_data(ticker)
+    if len(data) < 12:
         return False
 
-    recent = df.iloc[-3:]
-    low_idx = recent['Close'].idxmin()
-    high_idx = recent['Close'].idxmax()
+    # Use last 12 months to find low-high
+    prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
+    recent = prices[-12:]
 
-    if low_idx == high_idx:
-        return False  # not a clear range
+    # Find local low first, then local high after it
+    local_low = min(recent[:-4], key=lambda x: x["low"])  # Allow 3+ months buffer
+    low_index = recent.index(local_low)
+    local_high = max(recent[low_index + 1:], key=lambda x: x["high"])
+    high_index = recent.index(local_high)
 
-    low_log = np.log(df.loc[low_idx, 'Close'])
-    high_log = np.log(df.loc[high_idx, 'Close'])
+    if high_index <= low_index:
+        return False  # No valid move
 
-    fib_618_log = low_log + 0.618 * (high_log - low_log)
-    fib_618_price = np.exp(fib_618_log)
+    # Calculate 0.618 retracement
+    retrace_price = log_fib_0618(local_low["low"], local_high["high"])
 
-    tolerance = 0.03  # 3%
-    return any(
-        abs(price - fib_618_price) / fib_618_price <= tolerance
-        for price in recent['Close']
-    )
+    # Get most recent month (April 2025)
+    latest = recent[-1]
+    if abs(latest["close"] - retrace_price) / retrace_price <= 0.05:
+        return {
+            "ticker": ticker,
+            "low": local_low["low"],
+            "high": local_high["high"],
+            "retraced_close": latest["close"],
+            "expected_0618": retrace_price,
+            "month": latest["date"].strftime("%b %Y")
+        }
 
-if "tickers" not in st.session_state:
-    with st.spinner("Fetching tickers list from Polygon.io..."):
-        st.session_state.tickers = get_nasdaq_tickers()
+    return False
 
-max_tickers = 100
-st.write(f"Scanning first **{max_tickers}** NASDAQ stocks...")
+# User controls
+max_tickers = st.slider("How many tickers to scan", 50, 500, 100, 50)
 
-if st.button("Run Scan"):
+if st.button("Scan Now"):
+    st.write("🔍 Scanning... This may take a few minutes.")
+    tickers = get_tickers(limit=max_tickers)
     results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
 
-    for i, ticker in enumerate(st.session_state.tickers[:max_tickers]):
-        status_text.text(f"Scanning {ticker} ({i+1}/{max_tickers})")
-        df = get_monthly_agg(ticker)
-        if check_618_retracement_last_3m(df):
-            results.append(ticker)
-        progress_bar.progress((i + 1) / max_tickers)
-        time.sleep(0.2)
+    progress = st.progress(0)
+    for i, ticker in enumerate(tickers):
+        match = scan_ticker(ticker)
+        if match:
+            results.append(match)
+        progress.progress((i + 1) / len(tickers))
 
-    status_text.text(f"Done! Found {len(results)} matches.")
-    if results:
-        st.success("✅ Matching tickers:")
-        st.write(results)
-    else:
-        st.warning("❌ No tickers matched the 0.618 retracement in the last 3 months.")
-
+    st.success(f"✅ Scan complete. Found {len(results)} matches.")
+    st.write("### 📈 Matching Tickers:")
+    for r in results:
+        st.write(f"**{r['ticker']}** | Month: {r['month']} | 0.618: ${r['expected_0618']} | Close: ${r['retraced_close']}")
 
