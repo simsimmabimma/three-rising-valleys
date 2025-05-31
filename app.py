@@ -1,29 +1,23 @@
 import streamlit as st
 import requests
 import math
-import os
 from datetime import datetime
+import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 API_KEY = os.getenv("A_xj1Mwz42bTgVFi6Hz0gOEm4Olk9aDH")
-
 BASE_URL = "https://api.polygon.io"
 
-st.title("📉 Monthly 0.618 Retracement Scanner (Log Scale)")
-
-def get_tickers(limit=200):
-    url = f"{BASE_URL}/v3/reference/tickers?market=stocks&exchange=XNYS&active=true&limit={limit}&apiKey={API_KEY}"
-    response = requests.get(url)
-    results = response.json().get("results", [])
-    return [t["ticker"] for t in results if "ticker" in t]
+st.title("📉 Test 0.618 Retracement Scanner on SOFI (Log Scale)")
 
 @st.cache_data(ttl=3600)
 def get_monthly_data(ticker, to="2025-04-30"):
     url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2015-01-01/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
     resp = requests.get(url)
     data = resp.json().get("results", [])
+    st.write(f"Fetched {len(data)} monthly candles for {ticker}")
     return data
 
 def log_fib_0618(low, high):
@@ -36,59 +30,35 @@ def log_fib_0618(low, high):
 def scan_ticker(ticker):
     data = get_monthly_data(ticker)
     if len(data) < 18:
+        st.write("Not enough monthly data.")
         return False
 
     prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
     recent = prices[-18:]  # last 18 months
 
-    # Find the lowest low in last 18 months
+    st.write("Last 18 months data:")
+    for d in recent:
+        st.write(f"{d['date'].strftime('%b %Y')}: low={d['low']}, high={d['high']}, close={d['close']}")
+
     local_low = min(recent, key=lambda x: x["low"])
     low_index = recent.index(local_low)
+    st.write(f"Local low: {local_low['low']} at {local_low['date'].strftime('%b %Y')} (index {low_index})")
 
-    # Find highest high after that low
     if low_index == len(recent) - 1:
-        return False  # no months after low
+        st.write("Local low is last month, no data after for high.")
+        return False
 
     subsequent = recent[low_index + 1:]
     local_high = max(subsequent, key=lambda x: x["high"])
     high_index = recent.index(local_high)
+    st.write(f"Local high: {local_high['high']} at {local_high['date'].strftime('%b %Y')} (index {high_index})")
 
     if high_index <= low_index:
+        st.write("Invalid sequence: high comes before low.")
         return False
 
     retrace_price = log_fib_0618(local_low["low"], local_high["high"])
+    st.write(f"Calculated 0.618 log fib retracement price: {retrace_price}")
 
-    # Check if any month after high has low <= retracement price
     for month_data in recent[high_index + 1:]:
-        if month_data["low"] <= retrace_price:
-            return {
-                "ticker": ticker,
-                "low": local_low["low"],
-                "high": local_high["high"],
-                "retraced_low": month_data["low"],
-                "expected_0618": retrace_price,
-                "month": month_data["date"].strftime("%b %Y")
-            }
-
-    return False
-
-def main():
-    st.write("Scanning tickers... (this may take some time)")
-
-    tickers = ["SOFI", "AAPL", "TSLA"]  # Adjust limit as needed
-
-    matches = []
-    progress = st.progress(0)
-
-    for i, ticker in enumerate(tickers):
-        result = scan_ticker(ticker)
-        if result:
-            matches.append(result)
-        progress.progress((i+1)/len(tickers))
-
-    st.success(f"Found {len(matches)} tickers with retracement dip.")
-    for match in matches:
-        st.write(match)
-
-if __name__ == "__main__":
-    main()
+        st.write(f"Checking month {month_data['date'].strftime('%b %Y')} low_
