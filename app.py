@@ -75,7 +75,7 @@ def scan_ticker(ticker):
 def main():
     st.write("Scanning tickers... (this may take some time)")
 
-    tickers = get_tickers(limit=200)  # Adjust limit as needed
+    tickers = ["SOFI", "AAPL", "TSLA"]  # Adjust limit as needed
 
     matches = []
     progress = st.progress(0)
