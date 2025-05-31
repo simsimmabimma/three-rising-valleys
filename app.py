@@ -1,91 +1,121 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Function to fetch monthly stock data
-def get_monthly_data(ticker, period="2y"):
-    stock = yf.Ticker(ticker)
-    # Fetch historical data
-    data = stock.history(period=period)
-    # Resample to monthly data, taking the last price of each month
-    monthly_data = data['Close'].resample('M').last()
-    # Create a DataFrame
-    df = pd.DataFrame({
-        'Date': monthly_data.index,
-        'Close': monthly_data.values,
-        'Low': data['Low'].resample('M').min(),
-        'High': data['High'].resample('M').max()
-    })
-    return df
+# Hardcoded tickers for testing
+TICKERS = ["TARA", "SOFI"]
 
-# Function to detect Three Rising Valleys pattern
-def detect_three_rising_valleys(df, lookback=12):
-    # Look for valleys (local minima) in the Low prices
-    valleys = []
-    for i in range(1, len(df)-1):
-        if df['Low'].iloc[i] < df['Low'].iloc[i-1] and df['Low'].iloc[i] < df['Low'].iloc[i+1]:
-            valleys.append((df['Date'].iloc[i], df['Low'].iloc[i], i))
-    
-    # Check for three rising valleys
-    patterns = []
-    for i in range(len(valleys)-2):
-        valley1, valley2, valley3 = valleys[i], valleys[i+1], valleys[i+2]
-        date1, low1, idx1 = valley1
-        date2, low2, idx2 = valley2
-        date3, low3, idx3 = valley3
-        
-        # Check if lows are rising
-        if low1 < low2 < low3:
-            # Check if the peaks between valleys are not significantly declining
-            peak1 = df['High'].iloc[idx1:idx2].max()
-            peak2 = df['High'].iloc[idx2:idx3].max()
-            # Ensure peaks are not significantly lower (e.g., within 10% of previous peak)
-            if peak2 >= peak1 * 0.9:
-                patterns.append({
-                    'Ticker': ticker,
-                    'Valley1': {'Date': date1, 'Low': low1},
-                    'Valley2': {'Date': date2, 'Low': low2},
-                    'Valley3': {'Date': date3, 'Low': low3},
-                    'Peak1': peak1,
-                    'Peak2': peak2
-                })
-    
-    return patterns
+def find_swing_higher_lows(df, lookback_months=18, recent_low_months=3):
+    if df.empty or len(df) < 10:
+        return False, "Not enough data"
 
-# Main function to scan stocks
-def scan_stocks(tickers):
-    print("Scanning stocks for Three Rising Valleys pattern...")
-    for ticker in tickers:
+    df = df.sort_index()
+    last_date = df.index[-1]
+    start_date = last_date - pd.DateOffset(months=lookback_months)
+    df = df[df.index >= start_date]
+
+    lows = df['Low'].values
+    highs = df['High'].values
+    dates = df.index.to_list()
+    n = len(df)
+
+    swing_lows = []
+    swing_highs = []
+
+    i = 0
+    while i < n - 1:
+        low_val = lows[i]
+        low_date = dates[i]
+
+        high_idx = None
+        for j in range(i + 1, n):
+            if highs[j] > highs[j - 1]:
+                high_idx = j
+            else:
+                break
+
+        if high_idx is None or high_idx >= n:
+            break
+
+        high_val = highs[high_idx]
+        high_date = dates[high_idx]
+
+        retrace_idx = None
+        for k in range(high_idx + 1, n):
+            if lows[k] < lows[k - 1]:
+                retrace_idx = k
+                break
+
+        if retrace_idx is None or retrace_idx >= n:
+            break
+
+        retr_low = lows[retrace_idx]
+        retr_low_date = dates[retrace_idx]
+
+        retracement = (high_val - retr_low) / (high_val - low_val)
+        if retracement < 0.38:
+            i = retrace_idx + 1
+            continue
+
+        swing_lows.append((low_date, low_val))
+        swing_lows.append((retr_low_date, retr_low))
+        swing_highs.append((high_date, high_val))
+
+        if len(swing_lows) >= 2:
+            recent_cutoff = last_date - pd.DateOffset(months=recent_low_months)
+            if retr_low_date >= recent_cutoff:
+                return True, f"Found pattern: last higher low at {retr_low_date.date()} retraced {retracement:.3f}"
+
+        i = retrace_idx + 1
+
+    return False, "Pattern not found"
+
+def main():
+    st.title("Swing Higher Lows Scanner (Monthly Chart)")
+
+    tickers = TICKERS
+    st.write(f"Testing with {len(tickers)} hardcoded tickers: {', '.join(tickers)}")
+
+    if 'index' not in st.session_state:
+        st.session_state.index = 0
+    if 'found_tickers' not in st.session_state:
+        st.session_state.found_tickers = []
+
+    if st.session_state.index >= len(tickers):
+        st.write("All tickers scanned.")
+        if st.session_state.found_tickers:
+            st.write("Tickers matching pattern:")
+            for t, msg in st.session_state.found_tickers:
+                st.write(f"- {t}: {msg}")
+        return
+
+    current_ticker = tickers[st.session_state.index]
+    st.write(f"Scanning ticker {st.session_state.index + 1}/{len(tickers)}: **{current_ticker}**")
+
+    if st.button("Scan This Ticker"):
         try:
-            # Fetch monthly data
-            df = get_monthly_data(ticker)
-            if len(df) < 6:  # Ensure enough data points
-                continue
-            
-            # Detect patterns
-            patterns = detect_three_rising_valleys(df)
-            
-            # Print results
-            for pattern in patterns:
-                print(f"\nPotential Three Rising Valleys pattern found for {ticker}:")
-                print(f"Valley 1: {pattern['Valley1']['Date'].date()} at ${pattern['Valley1']['Low']:.2f}")
-                print(f"Valley 2: {pattern['Valley2']['Date'].date()} at ${pattern['Valley2']['Low']:.2f}")
-                print(f"Valley 3: {pattern['Valley3']['Date'].date()} at ${pattern['Valley3']['Low']:.2f}")
-                print(f"Peak 1: ${pattern['Peak1']:.2f}")
-                print(f"Peak 2: ${pattern['Peak2']:.2f}")
+            data = yf.Ticker(current_ticker).history(period="5y", interval="1mo")
+            if data.empty:
+                st.warning("No monthly data found.")
+            else:
+                found, msg = find_swing_higher_lows(data)
+                if found:
+                    st.success(f"{current_ticker} matches pattern! {msg}")
+                    st.session_state.found_tickers.append((current_ticker, msg))
+                else:
+                    st.info(f"{current_ticker} does NOT match pattern. {msg}")
         except Exception as e:
-            print(f"Error processing {ticker}: {e}")
+            st.error(f"Error scanning {current_ticker}: {e}")
 
-# Example usage
+    if st.button("Next Ticker"):
+        st.session_state.index += 1
+        st.experimental_rerun()
+
+    if st.session_state.found_tickers:
+        st.write("Tickers found so far:")
+        for t, msg in st.session_state.found_tickers:
+            st.write(f"- {t}: {msg}")
+
 if __name__ == "__main__":
-    # List of stock tickers to scan (you can expand this list)
-    tickers = [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 
-        'JPM', 'BAC', 'WFC', 'GS', 'C',
-        'XOM', 'CVX', 'SPY', 'QQQ'
-    ]
-    
-    # Scan stocks
-    scan_stocks(tickers)
+    main()
