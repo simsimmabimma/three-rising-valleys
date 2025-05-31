@@ -2,64 +2,90 @@ import streamlit as st
 import requests
 import math
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
+
 API_KEY = os.getenv("A_xj1Mwz42bTgVFi6Hz0gOEm4Olk9aDH")
+
 BASE_URL = "https://api.polygon.io"
 
-@st.cache_data(ttl=24*3600)  # Cache tickers for 24 hours
-def get_all_usa_tickers():
-    url = f"{BASE_URL}/v3/reference/tickers"
-    params = {
-        "market": "stocks",
-        "active": "true",
-        "limit": 1000,
-        "apiKey": API_KEY,
-        "locale": "US"
-    }
-    tickers = []
-    cursor = None
+st.title("📉 Monthly 0.618 Retracement Scanner (Log Scale)")
 
-    while True:
-        if cursor:
-            params["cursor"] = cursor
-        response = requests.get(url, params=params)
-        data = response.json()
+def get_tickers(limit=200):
+    url = f"{BASE_URL}/v3/reference/tickers?market=stocks&exchange=XNYS&active=true&limit={limit}&apiKey={API_KEY}"
+    response = requests.get(url)
+    results = response.json().get("results", [])
+    return [t["ticker"] for t in results if "ticker" in t]
 
-        if "results" not in data:
-            st.error(f"Error fetching tickers: {data.get('error', 'Unknown error')}")
-            break
+@st.cache_data(ttl=3600)
+def get_monthly_data(ticker, to="2025-04-30"):
+    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2015-01-01/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
+    resp = requests.get(url)
+    data = resp.json().get("results", [])
+    return data
 
-        tickers.extend([t["ticker"] for t in data["results"]])
-        cursor = data.get("next_page_token", None)
-        if not cursor:
-            break
-
-    return list(set(tickers))
-
-
-@st.cache_data(ttl=12*3600)  # Cache monthly bars for 12 hours
-def get_monthly_bars(ticker):
-    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2000-01-01/2100-01-01"
-    params = {"adjusted": "true", "sort": "asc", "limit": 1000, "apiKey": API_KEY}
-    resp = requests.get(url, params=params)
-    if resp.status_code != 200:
-        return None
-    data = resp.json()
-    if "results" not in data:
-        return None
-    bars = data["results"]
-    return bars
-
-
-def log_618_retracement(low, high):
+def log_fib_0618(low, high):
     log_low = math.log(low)
     log_high = math.log(high)
-    retrace_log = log_high - 0.618 * (log_high - log_low)
-    return math.exp(retrace_log)
+    log_diff = log_high - log_low
+    log_retracement = log_high - 0.618 * log_diff
+    return round(math.exp(log_retracement), 2)
+
+def scan_ticker(ticker):
+    data = get_monthly_data(ticker)
+    if len(data) < 12:
+        return False
+
+    # Use last 12 months to find low-high
+    prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
+    recent = prices[-12:]
+
+    # Find local low first, then local high after it
+    local_low = min(recent[:-4], key=lambda x: x["low"])  # Allow 3+ months buffer
+    low_index = recent.index(local_low)
+    local_high = max(recent[low_index + 1:], key=lambda x: x["high"])
+    high_index = recent.index(local_high)
+
+    if high_index <= low_index:
+        return False  # No valid move
+
+    # Calculate 0.618 retracement
+    retrace_price = log_fib_0618(local_low["low"], local_high["high"])
+
+    # Get most recent month (April 2025)
+    latest = recent[-1]
+    if abs(latest["close"] - retrace_price) / retrace_price <= 0.05:
+        return {
+            "ticker": ticker,
+            "low": local_low["low"],
+            "high": local_high["high"],
+            "retraced_close": latest["close"],
+            "expected_0618": retrace_price,
+            "month": latest["date"].strftime("%b %Y")
+        }
+
+    return False
+
+# User controls
+max_tickers = st.slider("How many tickers to scan", 50, 500, 100, 50)
+
+if st.button("Scan Now"):
+    st.write("🔍 Scanning... This may take a few minutes.")
+    tickers = get_tickers(limit=max_tickers)
+    results = []
+
+    progress = st.progress(0)
+    for i, ticker in enumerate(tickers):
+        match = scan_ticker(ticker)
+        if match:
+            results.append(match)
+        progress.progress((i + 1) / len(tickers))
+
+    st.success(f"✅ Scan complete. Found {len(results)} matches.")
+    st.write("### 📈 Matching Tickers:")
+    for r in results:
+        st.write(f"**{r['ticker']}** | Month: {r['month']} | 0.618: ${r['expected_0618']} | Close: ${r['retraced_close']}")
 
 
-def check_pattern(ticker, bars):
-    if not bars or len(bars) < 18:
-        return Fal
