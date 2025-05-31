@@ -1,109 +1,66 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import math
-from datetime import datetime
+import yfinance as yf
 import random
 
-st.title("📉 Monthly 0.618 Retracement Scanner")
+st.set_page_config(layout="wide")
+st.title("Three Rising Valleys Scanner")
 
-@st.cache_data(ttl=3600)
-def load_nasdaq_tickers():
-    url = "https://ftp.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-    df = pd.read_csv(url, sep="|")
-    # Remove rows with test issue or empty symbols
-    tickers = df['Symbol'].tolist()
-    tickers = [t for t in tickers if t and t != 'Symbol']
+# ----------------------------- Load tickers from your GitHub CSV -----------------------------
+@st.cache_data
+def load_custom_tickers():
+    url = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
+    df = pd.read_csv(url)
+    tickers = df.iloc[:, 0].dropna().unique().tolist()
     return tickers
 
-def log_fib_0618(low, high):
-    log_low = math.log(low)
-    log_high = math.log(high)
-    log_diff = log_high - log_low
-    log_retracement = log_high - 0.618 * log_diff
-    return round(math.exp(log_retracement), 2)
-
+# ----------------------------- Check for retracement pattern -----------------------------
 def check_retracement(ticker):
     try:
-        df = yf.download(ticker, period="4y", interval="1mo", progress=False, auto_adjust=True)
-    except Exception:
-        return None
+        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
+        required_cols = ["Low", "High"]
+        if not all(col in df.columns for col in required_cols):
+            return None
+        df = df.dropna(subset=required_cols)
+        df["HL"] = df["Low"].rolling(window=3).min()
+        df["HH"] = df["High"].rolling(window=3).max()
+        valleys = df["HL"].dropna().values[-5:]
+        peaks = df["HH"].dropna().values[-5:]
 
-    required_cols = ['Low', 'High', 'Close']
-
-    if df.empty:
-        return None
-
-    missing_cols = [col for col in required_cols if col not in df.columns]
-    if missing_cols:
-        return None
-
-    df = df.dropna(subset=required_cols)
-
-    if len(df) < 36:
-        return None
-
-    df = df.reset_index()
-
-    # Use last 36 months (3 years)
-    recent = df[-36:]
-
-    # Find local low first, then local high after it
-    local_low_row = recent.loc[recent['Low'].idxmin()]
-    low_index = recent['Low'].idxmin()
-    local_high_rows = recent.loc[recent.index > low_index]
-
-    if local_high_rows.empty:
-        return None
-
-    local_high_row = local_high_rows.loc[local_high_rows['High'].idxmax()]
-    high_index = local_high_rows['High'].idxmax()
-
-    if high_index <= low_index:
-        return None
-
-    retrace_price = log_fib_0618(local_low_row['Low'], local_high_row['High'])
-
-    latest = recent.iloc[-1]
-
-    # Check if latest close dipped to or below the retracement level
-    if latest['Close'] <= retrace_price:
-        return {
-            "ticker": ticker,
-            "low": local_low_row['Low'],
-            "high": local_high_row['High'],
-            "retracement_level": retrace_price,
-            "latest_close": latest['Close'],
-            "latest_date": latest['Date'].strftime("%b %Y")
-        }
+        if len(valleys) >= 3 and len(peaks) >= 2:
+            if valleys[-1] > valleys[-2] > valleys[-3] and peaks[-1] > peaks[-2]:
+                return {
+                    "Ticker": ticker,
+                    "Last Low": valleys[-1],
+                    "Last High": peaks[-1]
+                }
+    except Exception as e:
+        st.warning(f"Error checking {ticker}: {e}")
     return None
 
+# ----------------------------- Scan a random batch of tickers -----------------------------
 def scan_batch(tickers, batch_size=50):
+    batch = random.sample(tickers, min(batch_size, len(tickers)))
     results = []
-    tickers_to_scan = random.sample(tickers, min(batch_size, len(tickers)))
-    for ticker in tickers_to_scan:
-        result = check_retracement(ticker)
-        if result:
-            results.append(result)
+    for ticker in batch:
+        res = check_retracement(ticker)
+        if res:
+            results.append(res)
     return results
 
+# ----------------------------- Main app -----------------------------
 def main():
-    tickers = load_nasdaq_tickers()
-    st.write(f"Loaded {len(tickers)} NASDAQ tickers.")
+    tickers = load_custom_tickers()
+    st.write(f"✅ Loaded {len(tickers)} tickers from GitHub")
 
-    batch_size = st.number_input("Batch size per scan", min_value=10, max_value=100, value=50)
-
-    if st.button("Scan Batch"):
-        with st.spinner(f"Scanning {batch_size} random tickers for retracement..."):
-            results = scan_batch(tickers, batch_size)
+    if st.button("🔍 Scan for Three Rising Valleys"):
+        with st.spinner("Scanning 50 random tickers..."):
+            results = scan_batch(tickers, batch_size=50)
         if results:
-            st.success(f"Found {len(results)} tickers that dipped to/below 0.618 retracement level.")
-            for r in results:
-                st.write(f"**{r['ticker']}** - Low: {r['low']}, High: {r['high']}, "
-                         f"Retracement Level: {r['retracement_level']}, "
-                         f"Latest Close ({r['latest_date']}): {r['latest_close']}")
+            st.success(f"🎯 Found {len(results)} matching tickers!")
+            st.dataframe(pd.DataFrame(results))
         else:
-            st.info("No tickers found in this batch with a dip to or below 0.618 retracement level.")
+            st.info("No matching patterns found in this batch.")
 
 if __name__ == "__main__":
     main()
