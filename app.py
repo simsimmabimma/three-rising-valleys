@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import re
 
 st.set_page_config(page_title="Three Rising Valleys Screener", layout="wide")
 st.title("📈 Three Rising Valleys Screener (Monthly)")
@@ -10,7 +11,8 @@ def get_all_usa_tickers():
     url = "https://datahub.io/core/nasdaq-listings/r/nasdaq-listed-symbols.csv"
     df = pd.read_csv(url)
     tickers = df["Symbol"].tolist()
-    return [t for t in tickers if t.isalpha()]
+    pattern = re.compile(r'^[A-Z0-9\.\-]+$')  # Accept letters, numbers, dots, and dashes
+    return [t for t in tickers if pattern.match(t)]
 
 @st.cache_data
 def fetch_monthly_data(ticker):
@@ -48,3 +50,4 @@ if st.button("Run Screener"):
                 pass
     st.success(f"✅ Found {len(results)} matches.")
     st.write(results)
+
