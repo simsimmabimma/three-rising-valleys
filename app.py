@@ -5,14 +5,15 @@ import gzip
 import shutil
 import os
 from botocore.config import Config
+from datetime import datetime, timedelta
 
-# --- Secrets: Store these in .streamlit/secrets.toml ---
+# --- Secrets ---
 POLYGON_ACCESS_KEY = st.secrets["POLYGON_S3_ACCESS_KEY"]
 POLYGON_SECRET_KEY = st.secrets["POLYGON_S3_SECRET_KEY"]
 S3_ENDPOINT = "https://files.polygon.io"
 BUCKET_NAME = "flatfiles"
 
-# --- Initialize S3 client ---
+# --- S3 Setup ---
 session = boto3.Session(
     aws_access_key_id=POLYGON_ACCESS_KEY,
     aws_secret_access_key=POLYGON_SECRET_KEY,
@@ -38,89 +39,108 @@ def download_and_extract_s3_file(object_key):
     # Download from S3
     s3.download_file(BUCKET_NAME, object_key, local_gz_path)
 
-    # Extract the .gz
+    # Extract
     with gzip.open(local_gz_path, 'rb') as f_in:
         with open(local_csv_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
 
-    # Clean up .gz
     os.remove(local_gz_path)
     return local_csv_path
 
-def scan_for_three_rising_valleys(df, min_periods=3):
+def find_swing_lows(prices):
     """
-    Scan for three rising swing lows.
+    Find swing lows (local minima) from a price Series
     """
-    result = []
-    grouped = df.groupby("ticker")
+    return [
+        (i, prices[i])
+        for i in range(1, len(prices) - 1)
+        if prices[i] < prices[i - 1] and prices[i] < prices[i + 1]
+    ]
 
-    for ticker, group in grouped:
-        group = group.sort_values("timestamp")
-        lows = group["low"].rolling(window=3, center=True).apply(
-            lambda x: x[1] if x[1] < x[0] and x[1] < x[2] else None
-        ).dropna()
+def meets_criteria(df):
+    """
+    Check if ticker has a higher low and is trading above it
+    """
+    df = df.sort_values("timestamp")
+    df.set_index("timestamp", inplace=True)
+    monthly = df.resample("M").agg({"low": "min", "close": "last"}).dropna()
 
-        # Get actual low values and compare for rising pattern
-        swing_lows = group.loc[lows.index, ["timestamp", "low"]]
-        if len(swing_lows) >= 3:
-            last_3 = swing_lows.tail(3)
-            if all(x < y for x, y in zip(last_3["low"], last_3["low"][1:])):
-                result.append({
-                    "ticker": ticker,
-                    "low1": last_3["low"].iloc[0],
-                    "low2": last_3["low"].iloc[1],
-                    "low3": last_3["low"].iloc[2],
-                    "date3": pd.to_datetime(last_3["timestamp"].iloc[2], unit='ms')
-                })
+    if len(monthly) < 6:
+        return False
 
-    return pd.DataFrame(result)
+    swing_lows = find_swing_lows(monthly["low"].tolist())
+
+    if len(swing_lows) < 2:
+        return False
+
+    # Take last two swing lows
+    i1, low1 = swing_lows[-2]
+    i2, low2 = swing_lows[-1]
+
+    if low2 > low1:
+        current_close = monthly["close"].iloc[-1]
+        return current_close > low2
+
+    return False
 
 def main():
-    st.title("Three Rising Valleys Scanner (Polygon Flat Files)")
+    st.title("Monthly Higher Low Scanner (Polygon Flat Files)")
+    st.markdown("Scan tickers from Polygon S3 flat files for higher swing lows on monthly charts.")
 
-    data_type = 'bars_v1'  # Only use bars for HL scans
-    year = st.selectbox("Year", list(range(2020, 2025))[::-1])
-    month = st.selectbox("Month", [f"{i:02}" for i in range(1, 13)])
-    day = st.selectbox("Day", [f"{i:02}" for i in range(1, 32)])
+    # Download and combine data for the last 24 months
+    st.info("This may take a while. Processing ~24 monthly files.")
 
-    prefix = f"us_stocks_sip/{data_type}/{year}/{month}/"
-    st.write(f"Looking in: `{prefix}`")
+    with st.spinner("Fetching files from Polygon..."):
+        today = datetime.utcnow()
+        results = []
+        all_data = []
 
-    files = list_files(prefix)
-    if not files:
-        st.warning("No files found.")
-        return
+        # Load last 24 months of bars_v1
+        for i in range(24):
+            date = today - pd.DateOffset(months=i)
+            y, m = date.year, f"{date.month:02}"
+            prefix = f"us_stocks_sip/bars_v1/{y}/{m}/"
 
-    filtered_files = [f for f in files if f"{year}-{month}-{day}" in f]
-    if not filtered_files:
-        st.warning("No files found for selected date.")
-        return
+            files = list_files(prefix)
+            if not files:
+                continue
 
-    selected_file = st.selectbox("Select flat file", filtered_files)
+            # We use only 1 file per month, e.g., the first one (there may be one per ticker)
+            for file in files:
+                if not file.endswith(".csv.gz"):
+                    continue
+                try:
+                    path = download_and_extract_s3_file(file)
+                    df = pd.read_csv(path)
+                    os.remove(path)
+                    df = df[["ticker", "timestamp", "low", "close"]]
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+                    all_data.append(df)
+                    break  # Just 1 file per month for now
+                except Exception as e:
+                    st.warning(f"Error with file {file}: {e}")
+                    continue
 
-    if st.button("Download & Run Scan"):
-        with st.spinner("Downloading and processing..."):
-            local_csv = download_and_extract_s3_file(selected_file)
-            df = pd.read_csv(local_csv)
-            os.remove(local_csv)
+        if not all_data:
+            st.error("No data could be loaded.")
+            return
 
-            # Parse timestamp if present, else skip
-            if 'timestamp' not in df.columns:
-                st.error("This file doesn't contain time-series data with 'timestamp' column.")
-                return
+        full_df = pd.concat(all_data)
 
-            df = df[["ticker", "timestamp", "low"]].dropna()
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+        tickers = full_df["ticker"].unique()
+        st.write(f"Processing {len(tickers)} tickers...")
 
-            result_df = scan_for_three_rising_valleys(df)
+        for ticker in tickers:
+            data = full_df[full_df["ticker"] == ticker]
+            if meets_criteria(data):
+                results.append(ticker)
 
-        if not result_df.empty:
-            st.success(f"Found {len(result_df)} tickers with rising valleys.")
-            st.dataframe(result_df)
-            csv = result_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download results as CSV", csv, "three_rising_valleys.csv", "text/csv")
-        else:
-            st.info("No valid rising valley patterns found.")
+    if results:
+        st.success(f"Found {len(results)} tickers meeting the pattern!")
+        st.dataframe(pd.DataFrame(results, columns=["Ticker"]))
+        st.download_button("Download CSV", pd.DataFrame(results).to_csv(index=False), "higher_lows.csv", "text/csv")
+    else:
+        st.info("No tickers met the criteria.")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
