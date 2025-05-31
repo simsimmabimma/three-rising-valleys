@@ -29,9 +29,10 @@ def log_fib_0618(low, high):
 
 def scan_ticker(ticker):
     data = get_monthly_data(ticker)
-    if len(data) < 18:
-        st.write("Not enough monthly data.")
-        return False
+   if len(data) < 6:
+    st.write(f"Only {len(data)} months of data found. Not enough to scan.")
+    return False
+
 
     prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
     recent = prices[-18:]  # last 18 months
