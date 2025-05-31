@@ -38,54 +38,51 @@ def scan_ticker(ticker):
     if len(data) < 12:
         return False
 
-    # Use last 12 months to find low-high
     prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
     recent = prices[-12:]
 
-    # Find local low first, then local high after it
     local_low = min(recent[:-4], key=lambda x: x["low"])  # Allow 3+ months buffer
     low_index = recent.index(local_low)
     local_high = max(recent[low_index + 1:], key=lambda x: x["high"])
     high_index = recent.index(local_high)
 
     if high_index <= low_index:
-        return False  # No valid move
+        return False  # No valid swing
 
-    # Calculate 0.618 retracement
     retrace_price = log_fib_0618(local_low["low"], local_high["high"])
 
-    # Get most recent month (April 2025)
     latest = recent[-1]
-   if latest["low"] <= retrace_price:
-    return {
-        "ticker": ticker,
-        "low": local_low["low"],
-        "high": local_high["high"],
-        "retraced_low": latest["low"],
-        "expected_0618": retrace_price,
-        "month": latest["date"].strftime("%b %Y")
-    }
+
+    # CHANGE HERE: Check if latest month low dipped to or below 0.618 retracement price
+    if latest["low"] <= retrace_price:
+        return {
+            "ticker": ticker,
+            "low": local_low["low"],
+            "high": local_high["high"],
+            "retraced_low": latest["low"],
+            "expected_0618": retrace_price,
+            "month": latest["date"].strftime("%b %Y")
+        }
 
     return False
 
-# User controls
-max_tickers = st.slider("How many tickers to scan", 50, 500, 100, 50)
+def main():
+    st.write("Scanning tickers... (this may take some time)")
 
-if st.button("Scan Now"):
-    st.write("🔍 Scanning... This may take a few minutes.")
-    tickers = get_tickers(limit=max_tickers)
-    results = []
+    tickers = get_tickers(limit=200)  # Increase limit or paginate as needed
 
+    matches = []
     progress = st.progress(0)
+
     for i, ticker in enumerate(tickers):
-        match = scan_ticker(ticker)
-        if match:
-            results.append(match)
-        progress.progress((i + 1) / len(tickers))
+        result = scan_ticker(ticker)
+        if result:
+            matches.append(result)
+        progress.progress((i+1)/len(tickers))
 
-    st.success(f"✅ Scan complete. Found {len(results)} matches.")
-    st.write("### 📈 Matching Tickers:")
-    for r in results:
-        st.write(f"**{r['ticker']}** | Month: {r['month']} | 0.618: ${r['expected_0618']} | Close: ${r['retraced_close']}")
+    st.success(f"Found {len(matches)} tickers with retracement dip.")
+    for match in matches:
+        st.write(match)
 
-
+if __name__ == "__main__":
+    main()
