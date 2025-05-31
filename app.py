@@ -2,66 +2,95 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import time
+import random
 
+# Constants
+CSV_URL = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
+BATCH_DELAY_SEC = 1
+
+# Cache ticker loading
 @st.cache_data
-def load_nasdaq_tickers():
-    url = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
-    df = pd.read_csv(url)
-    tickers = df.iloc[:, 0].dropna().unique().tolist()
-    return tickers
+def load_tickers():
+    df = pd.read_csv(CSV_URL)
+    return df.iloc[:, 0].dropna().unique().tolist()
 
-def check_batch_retracement(ticker_data: pd.DataFrame):
-    results = []
-    for ticker in ticker_data.columns.levels[0]:
-        try:
-            df = ticker_data[ticker].dropna(subset=["Low", "High"])
+# Check retracement pattern
+def check_retracement(ticker):
+    try:
+        df = yf.download(ticker, period="6mo", interval="1d", progress=False)
+        required_cols = ['Low', 'High']
+        if not all(col in df.columns for col in required_cols):
+            return None
 
-            if df.empty or len(df) < 10:
-                continue
+        df = df.dropna(subset=required_cols)
+        if len(df) < 30:
+            return None
 
-            df["HL"] = df["Low"].rolling(window=3).min()
-            df["HH"] = df["High"].rolling(window=3).max()
+        recent_lows = df['Low'].tail(30).values
+        recent_highs = df['High'].tail(30).values
 
-            valleys = df["HL"].dropna().values[-5:]
-            peaks = df["HH"].dropna().values[-5:]
+        low_valleys = sorted(recent_lows[-15:])[:3]
+        if not (low_valleys[0] < low_valleys[1] < low_valleys[2]):
+            return None
 
-            if len(valleys) >= 3 and len(peaks) >= 2:
-                if valleys[-1] > valleys[-2] > valleys[-3] and peaks[-1] > peaks[-2]:
-                    results.append({
-                        "Ticker": ticker,
-                        "Last Low": round(valleys[-1], 2),
-                        "Last High": round(peaks[-1], 2)
-                    })
+        retracement = (recent_highs[-1] - recent_lows[-1]) / recent_lows[-1]
+        if retracement < 0.05:
+            return None
 
-        except Exception as e:
-            st.warning(f"Error processing {ticker}: {e}")
+        return ticker
+    except Exception as e:
+        st.warning(f"Error checking {ticker}: {e}")
+        return None
 
-    return results
+# Scan tickers in batches
+def scan_tickers(tickers, batch_size):
+    if "scanned" not in st.session_state:
+        st.session_state.scanned = set()
+    if "results" not in st.session_state:
+        st.session_state.results = []
 
-def scan_all_tickers_vectorized(tickers, batch_size):
-    st.write(f"Scanning {len(tickers)} tickers in batches of {batch_size}")
-    results = []
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i:i + batch_size]
-        st.write(f"Fetching batch {i // batch_size + 1}: {len(batch)} tickers")
-        try:
-            data = yf.download(batch, period="3mo", interval="1d", group_by="ticker", progress=False, threads=True)
-            batch_results = check_batch_retracement(data)
-            results.extend(batch_results)
-        except Exception as e:
-            st.error(f"Batch failed: {e}")
-        time.sleep(1)  # Adjust based on throttling observed
-    return results
+    total = len(tickers)
+    to_scan = [t for t in tickers if t not in st.session_state.scanned]
+    random.shuffle(to_scan)
 
+    progress = st.progress(0)
+    scanned_count = 0
+
+    for i in range(0, len(to_scan), batch_size):
+        batch = to_scan[i:i + batch_size]
+        for ticker in batch:
+            result = check_retracement(ticker)
+            st.session_state.scanned.add(ticker)
+            if result:
+                st.session_state.results.append(result)
+        scanned_count += len(batch)
+        progress.progress(min(scanned_count / total, 1.0))
+        time.sleep(BATCH_DELAY_SEC)
+
+    return st.session_state.results
+
+# Main app
 def main():
-    st.title("Three Rising Valleys Screener")
-    tickers = load_nasdaq_tickers()
-    batch_size = st.slider("Select batch size", min_value=50, max_value=500, step=50, value=200)
+    st.title("Three Rising Valleys Scanner")
+    tickers = load_tickers()
 
-    if st.button("Start Scan"):
-        results = scan_all_tickers_vectorized(tickers, batch_size)
-        st.success(f"Scan complete. {len(results)} tickers found.")
-        st.dataframe(pd.DataFrame(results))
+    st.sidebar.header("Settings")
+    batch_size = st.sidebar.slider("Batch size", min_value=10, max_value=200, value=100, step=10)
+
+    if st.sidebar.button("Start Scan"):
+        with st.spinner("Scanning tickers..."):
+            results = scan_tickers(tickers, batch_size)
+        st.success(f"Scan complete. {len(results)} matches found.")
+        st.write(results)
+
+    if st.sidebar.button("Reset"):
+        st.session_state.scanned = set()
+        st.session_state.results = []
+        st.success("Scan history cleared.")
+
+    if "results" in st.session_state and st.session_state.results:
+        st.subheader("Matched Tickers")
+        st.write(st.session_state.results)
 
 if __name__ == "__main__":
     main()
