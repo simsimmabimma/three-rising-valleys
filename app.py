@@ -15,10 +15,14 @@ st.title("📉 Test 0.618 Retracement Scanner on SOFI (Log Scale)")
 @st.cache_data(ttl=3600)
 def get_monthly_data(ticker, to="2025-05-30"):
    from datetime import datetime, timedelta
+from datetime import datetime, timedelta
 
-two_years_ago = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
-url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/{two_years_ago}/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
-
+def get_monthly_data(ticker, to="2025-04-30"):
+    two_years_ago = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
+    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/{two_years_ago}/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
+    resp = requests.get(url)
+    data = resp.json().get("results", [])
+    return data
     resp = requests.get(url)
     data = resp.json().get("results", [])
     st.write(f"Fetched {len(data)} monthly candles for {ticker}")
