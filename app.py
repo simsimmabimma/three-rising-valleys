@@ -1,90 +1,67 @@
-import yfinance as yf
-import pandas as pd
-import time
-import random
 import streamlit as st
+import pandas as pd
+import yfinance as yf
+import time
 
-# --- CONFIG ---
-CSV_URL = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
-BATCH_SIZE = 50
-SLEEP_BETWEEN_CALLS = 0.5  # seconds
-
-# --- LOAD TICKERS ---
 @st.cache_data
-def load_tickers():
-    df = pd.read_csv(CSV_URL)
+def load_nasdaq_tickers():
+    url = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
+    df = pd.read_csv(url)
     tickers = df.iloc[:, 0].dropna().unique().tolist()
     return tickers
 
-# --- CHECK FOR PATTERN ---
-def check_retracement(ticker):
-    try:
-        df = yf.download(ticker, period="3mo", interval="1d", progress=False, threads=False)
-
-        if df.empty or not all(col in df.columns for col in ["Low", "High"]):
-            print(f"Missing data for {ticker}")
-            return None
-
-        df = df.dropna(subset=["Low", "High"])
-        if df.empty:
-            print(f"Empty after dropping NaNs: {ticker}")
-            return None
-
-        df["HL"] = df["Low"].rolling(window=3).min()
-        df["HH"] = df["High"].rolling(window=3).max()
-
-        valleys = df["HL"].dropna().values[-5:]
-        peaks = df["HH"].dropna().values[-5:]
-
-        if len(valleys) >= 3 and len(peaks) >= 2:
-            if valleys[-1] > valleys[-2] > valleys[-3] and peaks[-1] > peaks[-2]:
-                return {
-                    "Ticker": ticker,
-                    "Last Low": round(valleys[-1], 2),
-                    "Last High": round(peaks[-1], 2)
-                }
-
-    except Exception as e:
-        print(f"Error checking {ticker}: {e}")
-    return None
-
-# --- PROCESS ALL TICKERS IN BATCHES ---
-def scan_all_tickers(tickers, batch_size):
-    st.write(f"Total tickers to scan: {len(tickers)}")
+def check_batch_retracement(ticker_data: pd.DataFrame):
     results = []
-    seen = set()
-    remaining = set(tickers)
+    for ticker in ticker_data.columns.levels[0]:
+        try:
+            df = ticker_data[ticker].dropna(subset=["Low", "High"])
 
-    while remaining:
-        batch = random.sample(list(remaining), min(batch_size, len(remaining)))
-        for ticker in batch:
-            st.write(f"Scanning: {ticker}")
-            result = check_retracement(ticker)
-            if result:
-                st.success(f"Pattern found: {result['Ticker']}")
-                results.append(result)
-            seen.add(ticker)
-            remaining.remove(ticker)
-            time.sleep(SLEEP_BETWEEN_CALLS)
+            if df.empty or len(df) < 10:
+                continue
 
-        st.write(f"{len(seen)} tickers scanned so far, {len(remaining)} remaining...")
+            df["HL"] = df["Low"].rolling(window=3).min()
+            df["HH"] = df["High"].rolling(window=3).max()
+
+            valleys = df["HL"].dropna().values[-5:]
+            peaks = df["HH"].dropna().values[-5:]
+
+            if len(valleys) >= 3 and len(peaks) >= 2:
+                if valleys[-1] > valleys[-2] > valleys[-3] and peaks[-1] > peaks[-2]:
+                    results.append({
+                        "Ticker": ticker,
+                        "Last Low": round(valleys[-1], 2),
+                        "Last High": round(peaks[-1], 2)
+                    })
+
+        except Exception as e:
+            st.warning(f"Error processing {ticker}: {e}")
 
     return results
 
-# --- MAIN ---
+def scan_all_tickers_vectorized(tickers, batch_size):
+    st.write(f"Scanning {len(tickers)} tickers in batches of {batch_size}")
+    results = []
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i + batch_size]
+        st.write(f"Fetching batch {i // batch_size + 1}: {len(batch)} tickers")
+        try:
+            data = yf.download(batch, period="3mo", interval="1d", group_by="ticker", progress=False, threads=True)
+            batch_results = check_batch_retracement(data)
+            results.extend(batch_results)
+        except Exception as e:
+            st.error(f"Batch failed: {e}")
+        time.sleep(1)  # Adjust based on throttling observed
+    return results
+
 def main():
-    st.title("📈 Three Rising Valleys Pattern Scanner")
-    tickers = load_tickers()
+    st.title("Three Rising Valleys Screener")
+    tickers = load_nasdaq_tickers()
+    batch_size = st.slider("Select batch size", min_value=50, max_value=500, step=50, value=200)
 
     if st.button("Start Scan"):
-        results = scan_all_tickers(tickers, BATCH_SIZE)
-        st.success(f"✅ Scan complete. {len(results)} matches found.")
-
-        if results:
-            df_results = pd.DataFrame(results)
-            st.dataframe(df_results)
-            csv = df_results.to_csv(index=False).encode("utf-8")
-            st.download_button("Download Results as CSV", csv, "pattern_results.csv", "text/csv")
+        results = scan_all_tickers_vectorized(tickers, batch_size)
+        st.success(f"Scan complete. {len(results)} tickers found.")
+        st.dataframe(pd.DataFrame(results))
 
 if __name__ == "__main__":
     main()
