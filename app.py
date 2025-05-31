@@ -1,105 +1,79 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-from datetime import datetime
+import yfinance as yf
+import time
+import random
 
-# Hardcoded tickers for testing
-TICKERS = ["TARA", "SOFI", "MRNA"]
+# CONFIG
+CSV_URL = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
+BATCH_SIZE = 100
+THROTTLE_RANGE = (2, 5)  # seconds to sleep between batches
+FIELDS_TO_EXTRACT = ['symbol', 'shortName', 'currentPrice', 'marketCap', 'volume', 'trailingPE']
 
-def has_higher_low_last_24_months(df):
-    if df.empty or len(df) < 26:
-        return False, "Not enough monthly data (need at least 26 months)"
+def batch_list(lst, batch_size):
+    for i in range(0, len(lst), batch_size):
+        yield lst[i:i + batch_size]
 
-    df = df.sort_index()
-    df = df[df.index >= df.index[-1] - pd.DateOffset(months=25)]
+def fetch_batch_data(batch):
+    tickers_str = ' '.join(batch)
+    data = yf.Tickers(tickers_str).tickers
+    results = []
 
-    lows = df['Low'].values
-    closes = df['Close'].values
-    dates = df.index.to_list()
-    n = len(df)
-
-    local_lows = []
-
-    for i in range(1, n - 1):
-        if lows[i] < lows[i - 1] and lows[i] < lows[i + 1]:
-            local_lows.append((dates[i], lows[i]))
-
-    if len(local_lows) < 2:
-        return False, "Not enough local lows found"
-
-    for i in range(1, len(local_lows)):
-        prev_date, prev_low = local_lows[i - 1]
-        curr_date, curr_low = local_lows[i]
-
-        if curr_low > prev_low and curr_date >= df.index[-1] - pd.DateOffset(months=24):
-            latest_close = closes[-1]
-            if latest_close > curr_low:
-                return True, f"Higher low on {curr_date.date()} (prev: {prev_date.date()}), latest close {latest_close:.2f} > low {curr_low:.2f}"
-            else:
-                return False, f"Higher low on {curr_date.date()}, but latest close ({latest_close:.2f}) is not higher than low ({curr_low:.2f})"
-
-    return False, "No higher low in the last 24 months"
+    for ticker in batch:
+        try:
+            info = data[ticker].info
+            row = {field: info.get(field) for field in FIELDS_TO_EXTRACT}
+            row['symbol'] = ticker
+            results.append(row)
+        except Exception as e:
+            st.warning(f"Error fetching {ticker}: {e}")
+    return results
 
 def main():
-    st.title("Higher Low + Price Above Low (Monthly Chart - Last 24 Months)")
+    st.title("Batch Ticker Scanner with Auto Throttling")
 
-    tickers = TICKERS
-    st.write(f"Testing with {len(tickers)} hardcoded tickers: {', '.join(tickers)}")
+    st.write(f"Loading tickers from remote CSV URL:")
+    st.write(CSV_URL)
 
-    if 'index' not in st.session_state:
-        st.session_state.index = 0
-    if 'found_tickers' not in st.session_state:
-        st.session_state.found_tickers = []
-
-    if st.session_state.index >= len(tickers):
-        st.success("✅ All tickers scanned.")
-        if st.session_state.found_tickers:
-            st.subheader("Tickers matching pattern:")
-            for t, msg in st.session_state.found_tickers:
-                st.write(f"- {t}: {msg}")
-        else:
-            st.info("No tickers matched the pattern.")
+    try:
+        df = pd.read_csv(CSV_URL)
+        # Use the first column as tickers (assumes first column is ticker)
+        tickers = df.iloc[:, 0].dropna().unique().tolist()
+    except Exception as e:
+        st.error(f"Error loading CSV from URL: {e}")
         return
 
-    current_ticker = tickers[st.session_state.index]
-    st.header(f"Scanning {current_ticker} ({st.session_state.index + 1} of {len(tickers)})")
+    st.write(f"Total tickers loaded: {len(tickers)}")
 
-    scan_ticker_clicked = st.button("🔍 Scan This Ticker")
-    next_ticker_clicked = st.button("➡️ Next Ticker")
+    if st.button("Start Batch Scan"):
+        all_data = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-    if scan_ticker_clicked:
-        try:
-            data = yf.Ticker(current_ticker).history(period="5y", interval="1mo")
+        for i, batch in enumerate(batch_list(tickers, BATCH_SIZE), start=1):
+            status_text.text(f"Processing batch {i} of {((len(tickers) - 1) // BATCH_SIZE) + 1}...")
+            batch_data = fetch_batch_data(batch)
+            all_data.extend(batch_data)
 
-            if data.empty:
-                st.warning("No data returned from Yahoo Finance.")
-                return
+            progress_bar.progress(min(i * BATCH_SIZE / len(tickers), 1.0))
 
-            if not {'High', 'Low', 'Close'}.issubset(data.columns):
-                st.warning("Data missing required columns.")
-                return
+            # Throttle
+            sleep_time = random.uniform(*THROTTLE_RANGE)
+            status_text.text(f"Sleeping for {sleep_time:.2f} seconds to avoid rate limits...")
+            time.sleep(sleep_time)
 
-            if not isinstance(data.index, pd.DatetimeIndex):
-                data.index = pd.to_datetime(data.index)
+        status_text.text("Done fetching data!")
 
-            found, msg = has_higher_low_last_24_months(data)
-            if found:
-                st.success(f"✅ {current_ticker} matches pattern! {msg}")
-                st.session_state.found_tickers.append((current_ticker, msg))
-            else:
-                st.info(f"{current_ticker} does NOT match pattern. {msg}")
+        results_df = pd.DataFrame(all_data)
+        st.dataframe(results_df)
 
-        except Exception as e:
-            st.error(f"Error scanning {current_ticker}: {e}")
+        csv = results_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download results as CSV",
+            data=csv,
+            file_name='yahoo_results.csv',
+            mime='text/csv'
+        )
 
-    if next_ticker_clicked:
-        st.session_state.index += 1
-        st.rerun()
-
-    if st.session_state.found_tickers:
-        st.write("✅ Tickers found so far:")
-        for t, msg in st.session_state.found_tickers:
-            st.write(f"- {t}: {msg}")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
