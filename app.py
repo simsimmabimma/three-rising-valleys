@@ -1,42 +1,110 @@
 import streamlit as st
-import requests
+import yfinance as yf
+import pandas as pd
 from datetime import datetime, timedelta
-import os
-from dotenv import load_dotenv
+import math
 
-load_dotenv()
+st.title("📉 Monthly 0.618 Retracement Scanner")
 
-API_KEY = os.getenv("uK8VVf63Y1jBNNOmUKOnpp8BEUI8e4Gw")
+# Load tickers from file or use fixed list
+@st.cache_data
+def load_tickers():
+    try:
+        with open("tickers.txt") as f:
+            return [line.strip().upper() for line in f if line.strip()]
+    except FileNotFoundError:
+        # fallback list
+        return ["AAPL", "MSFT", "TSLA", "GOOG", "SOFI", "AMZN", "NVDA", "META", "NFLX"]
 
-BASE_URL = "https://api.polygon.io"
+tickers = load_tickers()
 
-st.title("Test SOFI Monthly Data Fetch")
+def meets_criteria(ticker):
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info
 
-def get_monthly_data(ticker="SOFI"):
-    to_date = datetime.today().strftime("%Y-%m-%d")
-    from_date = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")  # 2 years ago
-    url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/{from_date}/{to_date}?adjusted=true&sort=asc&apiKey={API_KEY}"
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        st.error(f"API request failed with status {resp.status_code}: {resp.text}")
-        return None
-    json_data = resp.json()
-    return json_data
+        market_cap = info.get("marketCap", 0)
+        avg_volume = info.get("averageVolume", 0)
+        
+        hist = tk.history(period="4y", interval="1d")
+        if hist.empty:
+            return False
+        
+        first_date = hist.index[0]
+        if first_date > datetime.now() - timedelta(days=3*365):
+            return False
+        
+        if avg_volume < 1_000_000 or market_cap < 1_000_000_000:
+            return False
+        
+        return True
+    except Exception as e:
+        return False
 
-st.write("Fetching monthly data for SOFI...")
-data = get_monthly_data()
+def log_fib_0618(low, high):
+    log_low = math.log(low)
+    log_high = math.log(high)
+    log_diff = log_high - log_low
+    log_retracement = log_high - 0.618 * log_diff
+    return round(math.exp(log_retracement), 2)
 
-if data:
-    st.write("Raw API response:")
-    st.json(data)
+def check_retracement(ticker):
+    try:
+        tk = yf.Ticker(ticker)
+        data = tk.history(period="2y", interval="1mo")
+        if data.empty or len(data) < 6:
+            return False
+        
+        lows = data['Low'].tolist()
+        highs = data['High'].tolist()
+        dates = data.index.tolist()
+        
+        swing_low = min(lows)
+        swing_low_idx = lows.index(swing_low)
+        
+        if swing_low_idx == len(lows) - 1:
+            return False
+        
+        swing_high = max(highs[swing_low_idx+1:])
+        swing_high_idx = highs[swing_low_idx+1:].index(swing_high) + swing_low_idx + 1
+        
+        retrace_price = log_fib_0618(swing_low, swing_high)
+        
+        recent_lows = lows[-3:]
+        retraced = any(low <= retrace_price for low in recent_lows)
+        
+        if retraced:
+            retraced_month_idx = len(lows) - 3 + [low <= retrace_price for low in recent_lows].index(True)
+            retraced_month = dates[retraced_month_idx].strftime("%b %Y")
+            
+            return {
+                "Ticker": ticker,
+                "Swing Low": swing_low,
+                "Swing High": swing_high,
+                "0.618 Retracement": retrace_price,
+                "Retraced Month": retraced_month,
+                "Retraced Low": recent_lows[retraced_month_idx - (len(lows)-3)]
+            }
+        return False
+    except:
+        return False
 
-    results = data.get("results", [])
-    if not results:
-        st.write("No monthly data found.")
+if st.button("Run Scan"):
+    st.write(f"Scanning {len(tickers)} tickers. This may take several minutes...")
+    
+    results = []
+    for i, ticker in enumerate(tickers):
+        st.write(f"Checking {ticker} ({i+1}/{len(tickers)})")
+        if meets_criteria(ticker):
+            res = check_retracement(ticker)
+            if res:
+                results.append(res)
+    
+    if results:
+        df = pd.DataFrame(results)
+        st.write("Tickers meeting retracement pattern:")
+        st.dataframe(df)
     else:
-        st.write(f"Found {len(results)} months of data:")
-        for candle in results:
-            dt = datetime.utcfromtimestamp(candle["t"] / 1000)
-            st.write(f"{dt.strftime('%b %Y')}: Low={candle['l']}, High={candle['h']}, Close={candle['c']}")
+        st.write("No tickers met retracement pattern.")
 else:
-    st.write("Failed to fetch data.")
+    st.write("Click the 'Run Scan' button to start scanning.")
