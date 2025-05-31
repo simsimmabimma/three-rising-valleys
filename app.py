@@ -10,8 +10,8 @@ st.title("📈 Three Rising Valleys Screener (Monthly)")
 def get_all_usa_tickers():
     url = "https://datahub.io/core/nasdaq-listings/r/nasdaq-listed-symbols.csv"
     df = pd.read_csv(url)
-    tickers = df["Symbol"].tolist()
-    pattern = re.compile(r'^[A-Z0-9\.\-]+$')  # Accept letters, numbers, dots, and dashes
+    tickers = df["Symbol"].dropna().astype(str).tolist()  # Remove NaNs and convert to str
+    pattern = re.compile(r'^[A-Z0-9\.\-]+$')  # Allow letters, digits, dots, dashes
     return [t for t in tickers if pattern.match(t)]
 
 @st.cache_data
@@ -50,4 +50,3 @@ if st.button("Run Screener"):
                 pass
     st.success(f"✅ Found {len(results)} matches.")
     st.write(results)
-
