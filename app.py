@@ -61,4 +61,29 @@ def scan_ticker(ticker):
     st.write(f"Calculated 0.618 log fib retracement price: {retrace_price}")
 
     for month_data in recent[high_index + 1:]:
-        st.write(f"Checking month {month_data['date'].strftime('%b %Y')} low_
+        st.write(f"Checking month {month_data['date'].strftime('%b %Y')} low {month_data['low']}")
+        if month_data["low"] <= retrace_price:
+            st.write(f"Match found! {ticker} retraced to {month_data['low']} on {month_data['date'].strftime('%b %Y')}")
+            return {
+                "ticker": ticker,
+                "low": local_low["low"],
+                "high": local_high["high"],
+                "retraced_low": month_data["low"],
+                "expected_0618": retrace_price,
+                "month": month_data["date"].strftime("%b %Y")
+            }
+
+    st.write("No retracement to or below 0.618 fib found after the high.")
+    return False
+
+def main():
+    st.write("Scanning SOFI only...")
+    result = scan_ticker("SOFI")
+    if result:
+        st.success(f"Pattern detected for SOFI in {result['month']}")
+        st.json(result)
+    else:
+        st.warning("No pattern detected for SOFI.")
+
+if __name__ == "__main__":
+    main()
