@@ -1,29 +1,38 @@
-import streamlit as st
-import pandas as pd
 import yfinance as yf
+import pandas as pd
+import time
 import random
+import streamlit as st
 
-st.set_page_config(layout="wide")
-st.title("Three Rising Valleys Scanner")
+# --- CONFIG ---
+CSV_URL = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
+BATCH_SIZE = 50
+SLEEP_BETWEEN_CALLS = 0.5  # seconds
 
-# ----------------------------- Load tickers from your GitHub CSV -----------------------------
+# --- LOAD TICKERS ---
 @st.cache_data
-def load_custom_tickers():
-    url = "https://raw.githubusercontent.com/simsimmabimma/three-rising-valleys/refs/heads/main/nasdaqlisted%20-%20Sheet1.csv"
-    df = pd.read_csv(url)
+def load_tickers():
+    df = pd.read_csv(CSV_URL)
     tickers = df.iloc[:, 0].dropna().unique().tolist()
     return tickers
 
-# ----------------------------- Check for retracement pattern -----------------------------
+# --- CHECK FOR PATTERN ---
 def check_retracement(ticker):
     try:
-        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-        required_cols = ["Low", "High"]
-        if not all(col in df.columns for col in required_cols):
+        df = yf.download(ticker, period="3mo", interval="1d", progress=False, threads=False)
+
+        if df.empty or not all(col in df.columns for col in ["Low", "High"]):
+            print(f"Missing data for {ticker}")
             return None
-        df = df.dropna(subset=required_cols)
+
+        df = df.dropna(subset=["Low", "High"])
+        if df.empty:
+            print(f"Empty after dropping NaNs: {ticker}")
+            return None
+
         df["HL"] = df["Low"].rolling(window=3).min()
         df["HH"] = df["High"].rolling(window=3).max()
+
         valleys = df["HL"].dropna().values[-5:]
         peaks = df["HH"].dropna().values[-5:]
 
@@ -31,36 +40,51 @@ def check_retracement(ticker):
             if valleys[-1] > valleys[-2] > valleys[-3] and peaks[-1] > peaks[-2]:
                 return {
                     "Ticker": ticker,
-                    "Last Low": valleys[-1],
-                    "Last High": peaks[-1]
+                    "Last Low": round(valleys[-1], 2),
+                    "Last High": round(peaks[-1], 2)
                 }
+
     except Exception as e:
-        st.warning(f"Error checking {ticker}: {e}")
+        print(f"Error checking {ticker}: {e}")
     return None
 
-# ----------------------------- Scan a random batch of tickers -----------------------------
-def scan_batch(tickers, batch_size=50):
-    batch = random.sample(tickers, min(batch_size, len(tickers)))
+# --- PROCESS ALL TICKERS IN BATCHES ---
+def scan_all_tickers(tickers, batch_size):
+    st.write(f"Total tickers to scan: {len(tickers)}")
     results = []
-    for ticker in batch:
-        res = check_retracement(ticker)
-        if res:
-            results.append(res)
+    seen = set()
+    remaining = set(tickers)
+
+    while remaining:
+        batch = random.sample(list(remaining), min(batch_size, len(remaining)))
+        for ticker in batch:
+            st.write(f"Scanning: {ticker}")
+            result = check_retracement(ticker)
+            if result:
+                st.success(f"Pattern found: {result['Ticker']}")
+                results.append(result)
+            seen.add(ticker)
+            remaining.remove(ticker)
+            time.sleep(SLEEP_BETWEEN_CALLS)
+
+        st.write(f"{len(seen)} tickers scanned so far, {len(remaining)} remaining...")
+
     return results
 
-# ----------------------------- Main app -----------------------------
+# --- MAIN ---
 def main():
-    tickers = load_custom_tickers()
-    st.write(f"✅ Loaded {len(tickers)} tickers from GitHub")
+    st.title("📈 Three Rising Valleys Pattern Scanner")
+    tickers = load_tickers()
 
-    if st.button("🔍 Scan for Three Rising Valleys"):
-        with st.spinner("Scanning 50 random tickers..."):
-            results = scan_batch(tickers, batch_size=50)
+    if st.button("Start Scan"):
+        results = scan_all_tickers(tickers, BATCH_SIZE)
+        st.success(f"✅ Scan complete. {len(results)} matches found.")
+
         if results:
-            st.success(f"🎯 Found {len(results)} matching tickers!")
-            st.dataframe(pd.DataFrame(results))
-        else:
-            st.info("No matching patterns found in this batch.")
+            df_results = pd.DataFrame(results)
+            st.dataframe(df_results)
+            csv = df_results.to_csv(index=False).encode("utf-8")
+            st.download_button("Download Results as CSV", csv, "pattern_results.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
