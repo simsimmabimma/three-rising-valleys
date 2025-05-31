@@ -6,73 +6,36 @@ from datetime import datetime
 # Hardcoded tickers for testing
 TICKERS = ["TARA", "SOFI"]
 
-def find_swing_higher_lows(df, lookback_months=18, recent_low_months=3):
-    if df.empty or len(df) < 10:
-        return False, "Not enough data"
+def has_higher_low_last_12_months(df):
+    if df.empty or len(df) < 15:
+        return False, "Not enough monthly data (need at least 15 months)"
 
     df = df.sort_index()
-    last_date = df.index[-1]
-    start_date = last_date - pd.DateOffset(months=lookback_months)
-    df = df[df.index >= start_date]
-
+    df = df[df.index >= df.index[-1] - pd.DateOffset(months=14)]  # look back 15 months
     lows = df['Low'].values
-    highs = df['High'].values
     dates = df.index.to_list()
     n = len(df)
 
-    swing_lows = []
-    swing_highs = []
+    local_lows = []
 
-    i = 0
-    while i < n - 1:
-        low_val = lows[i]
-        low_date = dates[i]
+    for i in range(1, n - 1):
+        if lows[i] < lows[i - 1] and lows[i] < lows[i + 1]:
+            local_lows.append((dates[i], lows[i]))
 
-        high_idx = None
-        for j in range(i + 1, n):
-            if highs[j] > highs[j - 1]:
-                high_idx = j
-            else:
-                break
+    if len(local_lows) < 2:
+        return False, "Not enough local lows found"
 
-        if high_idx is None or high_idx >= n:
-            break
+    for i in range(1, len(local_lows)):
+        prev_date, prev_low = local_lows[i - 1]
+        curr_date, curr_low = local_lows[i]
 
-        high_val = highs[high_idx]
-        high_date = dates[high_idx]
+        if curr_low > prev_low and curr_date >= df.index[-1] - pd.DateOffset(months=12):
+            return True, f"Higher low on {curr_date.date()} (Previous: {prev_date.date()})"
 
-        retrace_idx = None
-        for k in range(high_idx + 1, n):
-            if lows[k] < lows[k - 1]:
-                retrace_idx = k
-                break
-
-        if retrace_idx is None or retrace_idx >= n:
-            break
-
-        retr_low = lows[retrace_idx]
-        retr_low_date = dates[retrace_idx]
-
-        retracement = (high_val - retr_low) / (high_val - low_val)
-        if retracement < 0.38:
-            i = retrace_idx + 1
-            continue
-
-        swing_lows.append((low_date, low_val))
-        swing_lows.append((retr_low_date, retr_low))
-        swing_highs.append((high_date, high_val))
-
-        if len(swing_lows) >= 2:
-            recent_cutoff = last_date - pd.DateOffset(months=recent_low_months)
-            if retr_low_date >= recent_cutoff:
-                return True, f"Found pattern: last higher low at {retr_low_date.date()} retraced {retracement:.3f}"
-
-        i = retrace_idx + 1
-
-    return False, "Pattern not found"
+    return False, "No higher low in the last 12 months"
 
 def main():
-    st.title("Swing Higher Lows Scanner (Monthly Chart)")
+    st.title("Higher Low Detector (Monthly Chart - Last 12 Months)")
 
     tickers = TICKERS
     st.write(f"Testing with {len(tickers)} hardcoded tickers: {', '.join(tickers)}")
@@ -86,11 +49,11 @@ def main():
     if st.session_state.index >= len(tickers):
         st.success("✅ All tickers scanned.")
         if st.session_state.found_tickers:
-            st.subheader("Tickers matching pattern:")
+            st.subheader("Tickers with higher lows:")
             for t, msg in st.session_state.found_tickers:
                 st.write(f"- {t}: {msg}")
         else:
-            st.info("No tickers matched the pattern.")
+            st.info("No tickers showed a higher low pattern.")
         return
 
     current_ticker = tickers[st.session_state.index]
@@ -115,7 +78,7 @@ def main():
             if not isinstance(data.index, pd.DatetimeIndex):
                 data.index = pd.to_datetime(data.index)
 
-            found, msg = find_swing_higher_lows(data)
+            found, msg = has_higher_low_last_12_months(data)
             if found:
                 st.success(f"✅ {current_ticker} matches pattern! {msg}")
                 st.session_state.found_tickers.append((current_ticker, msg))
@@ -127,7 +90,7 @@ def main():
 
     if next_ticker_clicked:
         st.session_state.index += 1
-        st.rerun()  # Safe rerun after state change
+        st.rerun()
 
     if st.session_state.found_tickers:
         st.write("✅ Tickers found so far:")
