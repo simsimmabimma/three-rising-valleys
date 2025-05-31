@@ -35,41 +35,47 @@ def log_fib_0618(low, high):
 
 def scan_ticker(ticker):
     data = get_monthly_data(ticker)
-    if len(data) < 12:
+    if len(data) < 18:
         return False
 
     prices = [{"date": datetime.utcfromtimestamp(candle["t"] / 1000), "low": candle["l"], "high": candle["h"], "close": candle["c"]} for candle in data]
-    recent = prices[-12:]
+    recent = prices[-18:]  # last 18 months
 
-    local_low = min(recent[:-4], key=lambda x: x["low"])  # Allow 3+ months buffer
+    # Find the lowest low in last 18 months
+    local_low = min(recent, key=lambda x: x["low"])
     low_index = recent.index(local_low)
-    local_high = max(recent[low_index + 1:], key=lambda x: x["high"])
+
+    # Find highest high after that low
+    if low_index == len(recent) - 1:
+        return False  # no months after low
+
+    subsequent = recent[low_index + 1:]
+    local_high = max(subsequent, key=lambda x: x["high"])
     high_index = recent.index(local_high)
 
     if high_index <= low_index:
-        return False  # No valid swing
+        return False
 
     retrace_price = log_fib_0618(local_low["low"], local_high["high"])
 
-    latest = recent[-1]
-
-    # CHANGE HERE: Check if latest month low dipped to or below 0.618 retracement price
-    if latest["low"] <= retrace_price:
-        return {
-            "ticker": ticker,
-            "low": local_low["low"],
-            "high": local_high["high"],
-            "retraced_low": latest["low"],
-            "expected_0618": retrace_price,
-            "month": latest["date"].strftime("%b %Y")
-        }
+    # Check if any month after high has low <= retracement price
+    for month_data in recent[high_index + 1:]:
+        if month_data["low"] <= retrace_price:
+            return {
+                "ticker": ticker,
+                "low": local_low["low"],
+                "high": local_high["high"],
+                "retraced_low": month_data["low"],
+                "expected_0618": retrace_price,
+                "month": month_data["date"].strftime("%b %Y")
+            }
 
     return False
 
 def main():
     st.write("Scanning tickers... (this may take some time)")
 
-    tickers = get_tickers(limit=200)  # Increase limit or paginate as needed
+    tickers = get_tickers(limit=200)  # Adjust limit as needed
 
     matches = []
     progress = st.progress(0)
