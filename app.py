@@ -10,8 +10,8 @@ st.title("📈 Three Rising Valleys Screener (Monthly)")
 def get_all_usa_tickers():
     url = "https://datahub.io/core/nasdaq-listings/r/nasdaq-listed-symbols.csv"
     df = pd.read_csv(url)
-    tickers = df["Symbol"].dropna().astype(str).tolist()  # Remove NaNs and convert to str
-    pattern = re.compile(r'^[A-Z0-9\.\-]+$')  # Allow letters, digits, dots, dashes
+    tickers = df["Symbol"].dropna().astype(str).tolist()
+    pattern = re.compile(r'^[A-Z0-9\.\-]+$')
     return [t for t in tickers if pattern.match(t)]
 
 @st.cache_data
@@ -36,12 +36,10 @@ def is_three_rising_valleys(df, min_gap=0.5):
 if "all_tickers" not in st.session_state:
     st.session_state.all_tickers = get_all_usa_tickers()
 
-selected = st.multiselect("Select up to 50 tickers to scan:", st.session_state.all_tickers[:1000], max_selections=50)
-
-if st.button("Run Screener"):
+if st.button("Run Full Screener (Scan all tickers)"):
     results = []
-    with st.spinner("Scanning tickers..."):
-        for ticker in selected:
+    with st.spinner(f"Scanning {len(st.session_state.all_tickers[:1000])} tickers..."):
+        for ticker in st.session_state.all_tickers[:1000]:
             try:
                 df = fetch_monthly_data(ticker)
                 if is_three_rising_valleys(df):
@@ -50,3 +48,4 @@ if st.button("Run Screener"):
                 pass
     st.success(f"✅ Found {len(results)} matches.")
     st.write(results)
+
