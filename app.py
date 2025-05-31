@@ -13,7 +13,7 @@ BASE_URL = "https://api.polygon.io"
 st.title("📉 Test 0.618 Retracement Scanner on SOFI (Log Scale)")
 
 @st.cache_data(ttl=3600)
-def get_monthly_data(ticker, to="2025-04-30"):
+def get_monthly_data(ticker, to="2025-05-30"):
     url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/month/2015-01-01/{to}?adjusted=true&sort=asc&apiKey={API_KEY}"
     resp = requests.get(url)
     data = resp.json().get("results", [])
