@@ -5,3 +5,5 @@ numpy
 python-dotenv
 lxml
 boto3
+duckdb
+zstandard
