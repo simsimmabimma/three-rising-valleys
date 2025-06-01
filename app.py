@@ -21,7 +21,7 @@ s3 = session.client(
     config=Config(signature_version="s3v4"),
 )
 
-BUCKET = "flatfiles"
+BUCKET = "ohlcfile"
 PREFIX = "us_stocks_sip/"
 
 # Connect to DuckDB
