@@ -1,82 +1,130 @@
-import boto3
-import pandas as pd
-import zstandard as zstd
-import io
-import duckdb
 import streamlit as st
+import boto3
+from botocore.config import Config
+import pandas as pd
+import duckdb
+import io
+import zstandard as zstd
+import json
 
-# Load secrets from .streamlit/secrets.toml
+# Setup AWS credentials from Streamlit secrets
 aws_key = st.secrets["aws"]["aws_access_key_id"]
 aws_secret = st.secrets["aws"]["aws_secret_access_key"]
-endpoint_url = "https://s3.amazonaws.com"  # or use polygon endpoint if needed
-bucket_name = "flatfiles"
 
-# Connect to S3
-s3 = boto3.client(
-    "s3",
+# Initialize boto3 S3 client
+session = boto3.Session(
     aws_access_key_id=aws_key,
     aws_secret_access_key=aws_secret,
-    endpoint_url=endpoint_url
+)
+s3 = session.client(
+    "s3",
+    endpoint_url="https://files.polygon.io",
+    config=Config(signature_version="s3v4"),
 )
 
-# Connect to DuckDB
+BUCKET = "flatfiles"
+PREFIX = "us_stocks_sip/"
+
+# Connect to DuckDB or create if it doesn't exist
 con = duckdb.connect("stock_data.duckdb")
-con.execute("""
-CREATE TABLE IF NOT EXISTS ohlc (
-    ticker VARCHAR,
-    timestamp DATE,
-    open DOUBLE,
-    high DOUBLE,
-    low DOUBLE,
-    close DOUBLE,
-    volume BIGINT
+con.execute(
+    """
+    CREATE TABLE IF NOT EXISTS ohlc (
+        ticker VARCHAR,
+        timestamp DATE,
+        open DOUBLE,
+        high DOUBLE,
+        low DOUBLE,
+        close DOUBLE,
+        volume BIGINT
+    )
+"""
 )
-""")
 
-# Load and parse one file from S3
+st.title("Polygon Flat Files Ingestion with Deduplication")
+
+# List files in S3 under prefix
+def list_files():
+    keys = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=BUCKET, Prefix=PREFIX):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith((".csv", ".json", ".csv.zst")):
+                keys.append(key)
+    return keys
+
+# Load file from S3 and return pandas DataFrame
 def load_file_from_s3(key):
-    print(f"Loading: {key}")
-    obj = s3.get_object(Bucket=bucket_name, Key=key)
-    data = obj["Body"].read()
+    st.info(f"Loading {key} ...")
+    obj = s3.get_object(Bucket=BUCKET, Key=key)
+    raw = obj["Body"].read()
 
-    if key.endswith(".csv.zst"):
-        dctx = zstd.ZstdDecompressor()
-        decompressed = dctx.decompress(data)
-        df = pd.read_csv(io.BytesIO(decompressed))
-    elif key.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(data))
-    elif key.endswith(".json"):
-        df = pd.read_json(io.BytesIO(data), lines=True)
-    else:
-        print("Unsupported file format:", key)
+    try:
+        if key.endswith(".csv"):
+            return pd.read_csv(io.BytesIO(raw))
+        elif key.endswith(".json"):
+            data = json.loads(raw)
+            # Assuming data is a list of dicts or dict with "results" key
+            if isinstance(data, dict) and "results" in data:
+                return pd.DataFrame(data["results"])
+            else:
+                return pd.DataFrame(data)
+        elif key.endswith(".csv.zst"):
+            dctx = zstd.ZstdDecompressor()
+            decompressed = dctx.decompress(raw)
+            return pd.read_csv(io.BytesIO(decompressed))
+    except Exception as e:
+        st.error(f"Failed to load {key}: {e}")
         return None
 
-    return df
-
-# Ingest a specific file into DuckDB
 def ingest_file(key):
     df = load_file_from_s3(key)
-    if df is not None:
-        df.columns = [col.strip().lower() for col in df.columns]
-        required_cols = {"ticker", "timestamp", "open", "high", "low", "close", "volume"}
-        if required_cols.issubset(set(df.columns)):
-            con.execute("INSERT INTO ohlc SELECT * FROM df")
-            st.success(f"✅ Ingested {key}")
-        else:
-            st.warning(f"⚠️ Skipped {key} — missing required columns")
+    if df is None:
+        return
 
-# Streamlit UI
-st.title("📦 Stock OHLC Ingestor (S3 → DuckDB)")
+    # Normalize columns
+    df.columns = [col.strip().lower() for col in df.columns]
 
-# List files in S3
-response = s3.list_objects_v2(Bucket=bucket_name, Prefix="ohlc/")
-keys = [obj["Key"] for obj in response.get("Contents", []) if obj["Key"].endswith((".csv", ".json", ".csv.zst"))]
+    required_cols = {"ticker", "timestamp", "open", "high", "low", "close", "volume"}
+    if not required_cols.issubset(set(df.columns)):
+        st.warning(f"Skipped {key} — missing required columns: {required_cols - set(df.columns)}")
+        return
 
-selected_files = st.multiselect("Select files to ingest:", options=keys)
+    df = df[list(required_cols)].copy()
 
-if st.button("🚀 Ingest Selected Files"):
-    for key in selected_files:
-        ingest_file(key)
+    # Convert timestamp to date only (no time)
+    df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.date
 
-if st.button("🗃️ Show Table Sample"):
-    st.dataframe(con.execute("SELECT * FROM ohlc LIMIT 20").df())
+    # Deduplication logic: Check which rows are already in DuckDB
+    unique_rows = []
+    existing_check_q = "SELECT 1 FROM ohlc WHERE ticker = ? AND timestamp = ? LIMIT 1"
+
+    for idx, row in df.iterrows():
+        exists = con.execute(existing_check_q, (row["ticker"], row["timestamp"])).fetchone()
+        if not exists:
+            unique_rows.append(row)
+
+    if not unique_rows:
+        st.info(f"All rows in {key} already exist in database, skipping insert.")
+        return
+
+    new_df = pd.DataFrame(unique_rows)
+    con.execute("INSERT INTO ohlc SELECT * FROM new_df")
+
+    st.success(f"Ingested {len(new_df)} new rows from {key}")
+
+def main():
+    files = list_files()
+    st.write(f"Found {len(files)} files in S3 under `{PREFIX}`")
+
+    file_to_ingest = st.selectbox("Select a file to ingest:", files)
+    if st.button("Ingest selected file"):
+        ingest_file(file_to_ingest)
+
+    # Show count of rows in DB
+    count = con.execute("SELECT COUNT(*) FROM ohlc").fetchone()[0]
+    st.write(f"Total rows in DuckDB: {count}")
+
+if __name__ == "__main__":
+    main()
