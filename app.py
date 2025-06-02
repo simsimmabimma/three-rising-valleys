@@ -1,37 +1,12 @@
 import streamlit as st
 import pandas as pd
 import boto3
-import re
 from datetime import datetime
+import re
 
-# 1️⃣ Must be the first Streamlit command
+# 1️⃣ Must be first Streamlit command
 st.set_page_config(page_title="Swing Low Stock Scanner", layout="wide")
 
-# ---------- COLUMN INFERENCE ----------
-def infer_columns(columns):
-    col_map = {}
-    for col in columns:
-        col_l = col.lower()
-        if 'symbol' in col_l or 'ticker' in col_l:
-            col_map['symbol'] = col
-        elif re.search(r'date|time', col_l):
-            col_map['date'] = col
-        elif 'open' in col_l:
-            col_map['open'] = col
-        elif 'high' in col_l:
-            col_map['high'] = col
-        elif 'low' in col_l:
-            col_map['low'] = col
-        elif 'close' in col_l:
-            col_map['close'] = col
-
-    required = ['symbol', 'date', 'open', 'high', 'low', 'close']
-    missing = [col for col in required if col not in col_map]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-    return col_map
-
-# ---------- Get S3 file stream ----------
 def get_s3_file_stream(bucket, key):
     session = boto3.Session(
         aws_access_key_id=st.secrets["AWS_ACCESS_KEY_ID"],
@@ -42,33 +17,34 @@ def get_s3_file_stream(bucket, key):
     obj = s3.get_object(Bucket=bucket, Key=key)
     return obj['Body']
 
-# ---------- Swing low analysis ----------
-def run_swing_low_analysis(df, col_map):
-    df = df.sort_values([col_map['symbol'], col_map['date']])
-    df.set_index(col_map['date'], inplace=True)
+def run_swing_low_analysis(df, cols):
+    # Sort and parse date
+    df = df.sort_values([cols['ticker'], cols['timestamp']])
+    df[cols['timestamp']] = pd.to_datetime(df[cols['timestamp']])
+    df.set_index(cols['timestamp'], inplace=True)
 
     # Resample monthly lows and closes per symbol
-    low_series = df.groupby(col_map['symbol'])[col_map['low']].resample('M').min().reset_index()
-    close_series = df.groupby(col_map['symbol'])[col_map['close']].resample('M').last().reset_index()
+    low_series = df.groupby(cols['ticker'])[cols['low']].resample('M').min().reset_index()
+    close_series = df.groupby(cols['ticker'])[cols['close']].resample('M').last().reset_index()
 
-    monthly = pd.merge(low_series, close_series, on=[col_map['symbol'], col_map['date']],
+    monthly = pd.merge(low_series, close_series, on=[cols['ticker'], cols['timestamp']],
                        suffixes=('_low', '_close'))
 
     today = pd.to_datetime('today').normalize()
     three_months_ago = today - pd.DateOffset(months=3)
     six_months_ago = today - pd.DateOffset(months=6)
 
-    recent = monthly[(monthly[col_map['date']] >= six_months_ago) & (monthly[col_map['date']] <= three_months_ago)]
+    recent = monthly[(monthly[cols['timestamp']] >= six_months_ago) & (monthly[cols['timestamp']] <= three_months_ago)]
 
     results = []
 
-    for symbol in recent[col_map['symbol']].unique():
-        sub = recent[recent[col_map['symbol']] == symbol]
-        swing_low = sub[col_map['low'] + '_low'].min()
-        swing_low_date = sub[sub[col_map['low'] + '_low'] == swing_low][col_map['date']].values[0]
+    for symbol in recent[cols['ticker']].unique():
+        sub = recent[recent[cols['ticker']] == symbol]
+        swing_low = sub[cols['low'] + '_low'].min()
+        swing_low_date = sub[sub[cols['low'] + '_low'] == swing_low][cols['timestamp']].values[0]
 
         # Get most recent close from original df
-        recent_close = df[df[col_map['symbol']] == symbol].reset_index().sort_values(col_map['date']).iloc[-1][col_map['close']]
+        recent_close = df[df[cols['ticker']] == symbol].reset_index().sort_values(cols['timestamp']).iloc[-1][cols['close']]
 
         if recent_close > swing_low:
             results.append({
@@ -80,66 +56,75 @@ def run_swing_low_analysis(df, col_map):
 
     return pd.DataFrame(results)
 
-# ---------- Main App ----------
 def main():
-    with st.sidebar:
-        st.header("📁 Load Data from S3")
-        s3_bucket = st.text_input("S3 Bucket", value="your-bucket-name")
-        s3_key = st.text_input("S3 Key (CSV File)", value="xnas-itch-20200531-20250530.ohlcv-1d.0000.csv")
-        analyze_btn = st.button("🔍 Load and Analyze")
+    st.title("📈 Swing Low Stock Scanner")
 
-    if analyze_btn:
+    bucket = st.text_input("S3 Bucket", value="your-bucket-name")
+    key = st.text_input("S3 Key (CSV file)", value="xnas-itch-20200531-20250530.ohlcv-1d.0000.csv")
+
+    if st.button("Load CSV Columns"):
         try:
-            status_text = st.empty()
-            scanned_text = st.empty()
-            matched_text = st.empty()
+            stream = get_s3_file_stream(bucket, key)
+            df_sample = pd.read_csv(stream, nrows=5)
+            columns = list(df_sample.columns)
+            st.success("Columns loaded successfully!")
+            st.write("Sample data:")
+            st.dataframe(df_sample)
 
-            status_text.info("Connecting to S3 and opening file...")
-
-            stream = get_s3_file_stream(s3_bucket, s3_key)
-
-            status_text.info("Reading CSV headers to infer columns...")
-
-            sample_df = pd.read_csv(stream, nrows=1000)
-            col_map = infer_columns(sample_df.columns)
-
-            status_text.success(f"Columns inferred: {col_map}")
-
-            # Restart stream because it was partially read
-            stream = get_s3_file_stream(s3_bucket, s3_key)
-
-            chunk_size = 100_000
-            reader = pd.read_csv(stream, chunksize=chunk_size)
-
-            all_data = []
-            tickers_scanned = set()
-            tickers_matched = []
-
-            status_text.info(f"Start ingesting and scanning data in chunks of {chunk_size} rows...")
-
-            for i, chunk in enumerate(reader):
-                all_data.append(chunk)
-                tickers_scanned.update(chunk[col_map['symbol']].unique())
-
-                df = pd.concat(all_data)
-                df[col_map['date']] = pd.to_datetime(df[col_map['date']])
-
-                matched_df = run_swing_low_analysis(df, col_map)
-                tickers_matched = matched_df['symbol'].tolist()
-
-                status_text.info(f"Processed chunk {i+1}...")
-
-                scanned_text.markdown(f"**Tickers scanned so far:** {', '.join(sorted(tickers_scanned))}")
-                matched_text.markdown(f"**Tickers matching criteria:** {', '.join(sorted(tickers_matched))}")
-
-            status_text.success("✅ Finished scanning all chunks.")
-            st.dataframe(matched_df)
-
-            csv = matched_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Results as CSV", data=csv, file_name="swing_low_results.csv")
+            # Store columns in session_state for dropdowns
+            st.session_state['columns'] = columns
+            st.session_state['bucket'] = bucket
+            st.session_state['key'] = key
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Failed to load CSV: {e}")
+
+    if 'columns' in st.session_state:
+        st.markdown("### Map your CSV columns")
+        cols = st.session_state['columns']
+
+        ticker_col = st.selectbox("Select the Ticker column", cols)
+        timestamp_col = st.selectbox("Select the Timestamp/Date column", cols)
+        open_col = st.selectbox("Select the Open price column", cols)
+        high_col = st.selectbox("Select the High price column", cols)
+        low_col = st.selectbox("Select the Low price column", cols)
+        close_col = st.selectbox("Select the Close price column", cols)
+
+        if st.button("Run Analysis"):
+            with st.spinner("Loading full CSV and analyzing... This may take a while for large files."):
+
+                try:
+                    stream = get_s3_file_stream(st.session_state['bucket'], st.session_state['key'])
+                    df_full = pd.read_csv(stream)
+
+                    # Check that selected columns exist
+                    for c in [ticker_col, timestamp_col, open_col, high_col, low_col, close_col]:
+                        if c not in df_full.columns:
+                            st.error(f"Column '{c}' not found in CSV!")
+                            return
+
+                    col_map = {
+                        'ticker': ticker_col,
+                        'timestamp': timestamp_col,
+                        'open': open_col,
+                        'high': high_col,
+                        'low': low_col,
+                        'close': close_col
+                    }
+
+                    result_df = run_swing_low_analysis(df_full, col_map)
+
+                    if result_df.empty:
+                        st.info("No stocks matched the swing low criteria in the selected timeframe.")
+                    else:
+                        st.success(f"Found {len(result_df)} stocks matching criteria:")
+                        st.dataframe(result_df)
+
+                        csv = result_df.to_csv(index=False).encode('utf-8')
+                        st.download_button("Download Results CSV", csv, "swing_low_results.csv")
+
+                except Exception as e:
+                    st.error(f"Error during analysis: {e}")
 
 if __name__ == "__main__":
     main()
