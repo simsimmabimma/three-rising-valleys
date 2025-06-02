@@ -1,9 +1,22 @@
 import streamlit as st
 import pandas as pd
 import boto3
+
+import traceback
+
+try:
+    # Your entire app code here (or just call main())
+    if __name__ == "__main__":
+        main()
+except Exception as e:
+    st.error("❌ Error running app:")
+    st.text(traceback.format_exc())
+
 from io import BytesIO, StringIO
 import re
 from datetime import datetime
+
+
 
 st.set_page_config(page_title="Swing Low Stock Scanner", layout="wide")
 st.title("📉 Monthly Swing Low Scanner (3–6 Months)")
